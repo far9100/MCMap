@@ -1,0 +1,14 @@
+# Output world files
+output/
+
+# Input world saves (user data)
+input/saves/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/

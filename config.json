@@ -1,0 +1,8 @@
+{
+  "min_y": -63,
+  "max_y": 319,
+  "sea_level": 0,
+  "snow_line": 256,
+  "region_origin": [0, 0],
+  "region_size": [2, 2]
+}
