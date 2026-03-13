@@ -33,7 +33,8 @@ def _gaussian_blur(arr: np.ndarray, sigma: float) -> np.ndarray:
 
 class HeightMap:
     def __init__(self, image_path: str, min_y: int = 1, max_y: int = 200,
-                 smooth: bool = True, smooth_sigma: float = 1.5,
+                 smooth: bool = True, smooth_sigma: float = 2.0,
+                 smooth_passes: int = 3,
                  hydraulic: bool = False, hydraulic_droplets: int = 20_000,
                  thermal: bool = False, thermal_iterations: int = 50,
                  thermal_talus: float = 0.05):
@@ -45,7 +46,8 @@ class HeightMap:
         # Store heights as 2D numpy array (H, W) for fast slicing
         raw = np.array(img, dtype=np.float32)            # (H, W) 0-255
         if smooth:
-            raw = _gaussian_blur(raw, sigma=smooth_sigma)
+            for _ in range(max(1, smooth_passes)):
+                raw = _gaussian_blur(raw, sigma=smooth_sigma)
 
         # Normalise to [0, 1] for erosion (both algorithms are tuned to this range)
         normalized = raw / 255.0                         # (H, W) float32

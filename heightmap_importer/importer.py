@@ -52,6 +52,8 @@ def import_heightmap(
     dirt_top_block:       str   = "minecraft:grass_block",
     verbose:            bool  = True,
     terrain_smoothing:  bool  = True,
+    smooth_sigma:       float = 2.0,
+    smooth_passes:      int   = 3,
     hydraulic_erosion:  bool  = False,
     hydraulic_droplets: int   = 20_000,
     thermal_erosion:    bool  = False,
@@ -92,6 +94,7 @@ def import_heightmap(
     # ------------------------------------------------------------------
     hm = HeightMap(
         image_path, min_y=min_y, max_y=max_y, smooth=terrain_smoothing,
+        smooth_sigma=smooth_sigma, smooth_passes=smooth_passes,
         hydraulic=hydraulic_erosion, hydraulic_droplets=hydraulic_droplets,
         thermal=thermal_erosion, thermal_iterations=thermal_iterations,
         thermal_talus=thermal_talus,

@@ -110,6 +110,12 @@ def _parse_args():
     p.add_argument("--no-terrain-smoothing", action="store_true",
                    default=not _CFG.get("terrain_smoothing", True),
                    help="停用地形平滑（高斯模糊）優化")
+    p.add_argument("--smooth-sigma", type=float,
+                   default=_CFG.get("smooth_sigma", 2.0),
+                   help=f"高斯模糊 sigma（config 預設：{_CFG.get('smooth_sigma', 2.0)}）")
+    p.add_argument("--smooth-passes", type=int,
+                   default=_CFG.get("smooth_passes", 3),
+                   help=f"高斯模糊套用次數（config 預設：{_CFG.get('smooth_passes', 3)}）")
 
     # Erosion options
     p.add_argument("--no-hydraulic-erosion", action="store_true",
@@ -306,6 +312,8 @@ def main():
             dirt_top_block        = dirt_top_block,
             verbose             = verbose,
             terrain_smoothing   = not args.no_terrain_smoothing,
+            smooth_sigma        = args.smooth_sigma,
+            smooth_passes       = args.smooth_passes,
             hydraulic_erosion   = not args.no_hydraulic_erosion,
             hydraulic_droplets  = args.hydraulic_droplets,
             thermal_erosion     = not args.no_thermal_erosion,
@@ -357,7 +365,8 @@ def _print_banner(args, image_path):
             print(f"    Y {lyr['min_y']:>4} ~ {lyr['max_y']:<4}  {lyr['block']}{blend_str}")
     print(f"  表面方塊深度: {_CFG.get('surface_depth_min', 1)}～{_CFG.get('surface_depth_max', 1)} 格（坡度+雜訊動態調整）")
     print(f"  縮放比例  : {args.scale} 格/像素")
-    print(f"  地形平滑  : {'開啟' if not args.no_terrain_smoothing else '關閉'}")
+    print(f"  地形平滑  : {'開啟' if not args.no_terrain_smoothing else '關閉'}"
+          + (f"（sigma={args.smooth_sigma}, {args.smooth_passes} 次）" if not args.no_terrain_smoothing else ""))
     print(f"  水力侵蝕  : {'開啟' if not args.no_hydraulic_erosion else '關閉'}"
           + (f"（雨滴 {args.hydraulic_droplets}）" if not args.no_hydraulic_erosion else ""))
     print(f"  熱侵蝕    : {'開啟' if not args.no_thermal_erosion else '關閉'}"
