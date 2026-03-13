@@ -47,20 +47,6 @@ _BASE_BLOCKS = [
     "minecraft:water",    # 4
 ]
 
-# Surface blocks whose subsurface is dirt + soil_depth
-_SOFT_SURFACE_NAMES = frozenset({
-    "minecraft:grass_block",
-    "minecraft:mycelium",
-    "minecraft:podzol",
-})
-
-# Surface blocks whose subsurface is 1 extra layer of themselves, then stone
-_LAYERED_SURFACE_NAMES = frozenset({
-    "minecraft:gravel",
-    "minecraft:sand",
-    "minecraft:red_sand",
-})
-
 
 # ---------------------------------------------------------------------------
 # Palette builder
@@ -86,28 +72,19 @@ def build_palette(surface_layers: list[dict]) -> tuple[list[str], dict[str, int]
             names.append(name)
         layer["palette_idx"] = name_to_idx[name]
 
+        if "steep_block" in layer:
+            sname = layer["steep_block"]
+            if sname not in name_to_idx:
+                name_to_idx[sname] = len(names)
+                names.append(sname)
+            layer["steep_palette_idx"] = name_to_idx[sname]
+
     return names, name_to_idx
 
 
 # ---------------------------------------------------------------------------
 # Per-section helpers
 # ---------------------------------------------------------------------------
-
-def _compute_soil_depth(surface_grid: np.ndarray) -> np.ndarray:
-    """
-    Compute per-column soil depth (1–5 blocks) based on local slope.
-
-    Steep terrain → thin soil; flat terrain → thick soil.
-    A small hash-based noise breaks up uniform patterns.
-
-    Returns a (16, 16) int32 array.
-    """
-    grad_z, grad_x = np.gradient(surface_grid.astype(np.float32))
-    slope = np.sqrt(grad_x ** 2 + grad_z ** 2)
-    base  = np.clip(4 - slope.astype(np.int32), 1, 4)
-    rng   = np.random.default_rng(int(np.sum(surface_grid) & 0xFFFF_FFFF))
-    noise = rng.integers(-1, 2, size=(16, 16), dtype=np.int32)
-    return np.clip(base + noise, 1, 5).astype(np.int32)
 
 
 def _compute_surface_depth(
@@ -134,17 +111,16 @@ def _compute_surface_depth(
     grad_z, grad_x = np.gradient(surface_grid.astype(np.float32))
     slope = np.sqrt(grad_x ** 2 + grad_z ** 2)
 
-    # slope 0 → base = max_depth;  slope ≥ 3 → base = min_depth
+    # slope 0 → slope_factor = 1 (平地→深);  slope ≥ 3 → slope_factor = 0 (陡坡→淺)
     slope_factor = np.clip(1.0 - slope / 3.0, 0.0, 1.0).astype(np.float32)
-    base = min_depth + slope_factor * (max_depth - min_depth)
 
     # Coherent noise in [0, 1) — seed differs from blend noise to be independent
     noise = _smooth_blend_noise(chunk_cx, chunk_cz, global_seed=999)
 
-    # Noise shifts depth by ±(max_depth - min_depth) / 4
-    noise_offset = (noise - 0.5) * (max_depth - min_depth) * 0.5
-
-    return np.clip(np.round(base + noise_offset).astype(np.int32), min_depth, max_depth)
+    # 將 slope_factor 與 noise 合併為 t ∈ [0, 1]
+    # noise 在 ±0.25 內微調 t，使變化有機但不超出範圍
+    t = np.clip(slope_factor + (noise - 0.5) * 0.5, 0.0, 1.0).astype(np.float32)
+    return np.round(min_depth + t * (max_depth - min_depth)).astype(np.int32)
 
 
 def _smooth_blend_noise(chunk_cx: int, chunk_cz: int, global_seed: int = 0) -> np.ndarray:
@@ -223,6 +199,12 @@ def _select_surface_blocks(
       • Full zone    [min_y, max_y]:           probability = 1
       • Upper blend  (max_y, max_y + blend]:  probability falls  1 → 0
 
+    Optional per-layer steep override:
+      • slope_threshold: float — columns whose gradient magnitude exceeds this
+        value will use steep_block instead of block.
+      • steep_block: str — block name to use on steep slopes (must also be
+        defined in config so it ends up in the palette).
+
     col_rand is derived from spatially coherent value noise keyed on world
     coordinates, so adjacent chunks produce a continuous noise field and
     transition boundaries have no visible chunk-aligned seams.
@@ -233,6 +215,10 @@ def _select_surface_blocks(
 
     result = np.full((16, 16), _IDX_STONE, dtype=np.uint8)   # fallback: stone
 
+    # Pre-compute slope once for steep-block substitution
+    grad_z, grad_x = np.gradient(surface_grid.astype(np.float32))
+    slope = np.sqrt(grad_x ** 2 + grad_z ** 2)
+
     # Ascending max_y: low zones run first, high zones overwrite last
     for layer in surface_layers:
         pidx  = int(layer["palette_idx"])
@@ -241,21 +227,37 @@ def _select_surface_blocks(
         blend = int(layer["blend"])
         sy    = surface_grid                                   # (16,16) int32
 
+        slope_threshold = layer.get("slope_threshold")
+        # steep_block is optional; falls back to stone when absent
+        steep_pidx = layer.get("steep_palette_idx", _IDX_STONE) if slope_threshold is not None else None
+
+        assigned = np.zeros((16, 16), dtype=bool)
+
         # Full zone – always assign
-        result[(sy >= min_y) & (sy <= max_y)] = pidx
+        mask = (sy >= min_y) & (sy <= max_y)
+        result[mask] = pidx
+        assigned |= mask
 
         if blend > 0:
             # Lower blend: [min_y-blend, min_y)  probability rises 0 → 1
             lo_floor = min_y - blend
             lo_zone  = (sy >= lo_floor) & (sy < min_y)
             lo_prob  = (sy.astype(np.float32) - lo_floor) / blend
-            result[lo_zone & (col_rand < lo_prob)] = pidx
+            lo_mask  = lo_zone & (col_rand < lo_prob)
+            result[lo_mask] = pidx
+            assigned |= lo_mask
 
             # Upper blend: (max_y, max_y+blend]  probability falls 1 → 0
             hi_ceil = max_y + blend
             hi_zone = (sy > max_y) & (sy <= hi_ceil)
             hi_prob = (hi_ceil - sy.astype(np.float32)) / blend
-            result[hi_zone & (col_rand < hi_prob)] = pidx
+            hi_mask = hi_zone & (col_rand < hi_prob)
+            result[hi_mask] = pidx
+            assigned |= hi_mask
+
+        # Steep override: replace with steep_block where slope exceeds threshold
+        if slope_threshold is not None:
+            result[assigned & (slope > slope_threshold)] = steep_pidx
 
     return result
 
@@ -265,10 +267,10 @@ def _compute_section_indices(
     surface_grid:         np.ndarray,   # (16,16) z×x int32
     surface_block_grid:   np.ndarray,   # (16,16) z×x uint8 (palette idx)
     water_level:          int,
-    soil_depth_grid:      np.ndarray,   # (16,16) z×x int32
     palette_names:        list[str],
     surface_depth_grid:   np.ndarray,   # (16,16) z×x int32  (1..max_depth)
     floor_y:              int = WORLD_MIN_Y,
+    top_surface_block_grid: np.ndarray | None = None,   # (16,16) overrides depth-0 block
 ) -> np.ndarray:
     """
     Return a (16,16,16) uint8 array of palette indices for one section.
@@ -277,11 +279,8 @@ def _compute_section_indices(
     floor_y: the lowest Y that receives a bedrock block; everything below is air.
     This is driven by config min_y so the user's height floor is respected.
 
-    Subsurface rules (determined by surface block type):
-      Soft   (grass_block, snow_block, …) → surface_depth layers of surface block,
-                                            then soil_depth layers of dirt, then stone
-      Layered (gravel, sand, …)           → surface_depth layers of itself, then stone
-      Hard   (stone, custom, …)           → surface_depth layers of itself, then stone
+    Subsurface rules:
+      Surface block layer: surface_depth blocks of the surface block, then stone.
     """
     base = sec_y * 16
     ly   = np.arange(16, dtype=np.int32)
@@ -295,8 +294,9 @@ def _compute_section_indices(
     sb = np.broadcast_to(
         surface_block_grid[np.newaxis, :, :], (16, 16, 16)
     ).copy()
-    sd = np.broadcast_to(
-        soil_depth_grid[np.newaxis, :, :], (16, 16, 16)
+    tsb_source = top_surface_block_grid if top_surface_block_grid is not None else surface_block_grid
+    tsb = np.broadcast_to(
+        tsb_source[np.newaxis, :, :], (16, 16, 16)
     ).copy()
     sdd = np.broadcast_to(
         surface_depth_grid[np.newaxis, :, :], (16, 16, 16)
@@ -315,34 +315,15 @@ def _compute_section_indices(
 
     out[bedrock] = _IDX_BEDROCK
 
-    # Build subsurface-type masks per-voxel (broadcast from per-column block idx)
-    soft_indices    = np.array(
-        [i for i, n in enumerate(palette_names) if n in _SOFT_SURFACE_NAMES],
-        dtype=np.uint8,
-    )
-    layered_indices = np.array(
-        [i for i, n in enumerate(palette_names) if n in _LAYERED_SURFACE_NAMES],
-        dtype=np.uint8,
-    )
+    # Top block (depth 0): may use a different block (e.g. grass_block over dirt)
+    out[above_bed & (depth == 0)] = tsb[above_bed & (depth == 0)]
 
-    is_soft    = np.isin(sb, soft_indices)    if len(soft_indices)    else np.zeros((16,16,16), bool)
-    is_layered = np.isin(sb, layered_indices) if len(layered_indices) else np.zeros((16,16,16), bool)
-    is_hard    = ~is_soft & ~is_layered
+    # Subsurface block layer: depth 1 … sdd-1
+    sub_mask = above_bed & (depth > 0) & (depth < sdd)
+    out[sub_mask] = sb[sub_mask]
 
-    # Surface block layer: depth 0 … sdd-1
-    surf_mask = above_bed & (depth < sdd)
-    out[surf_mask] = sb[surf_mask]
-
-    # Below the surface block layer (depth >= sdd):
-    after_surf = above_bed & (depth >= sdd)
-
-    # Soft (grass_block, snow_block, …): dirt for sdd … sdd+sd-1, then stone
-    soft_sub = after_surf & is_soft
-    out[soft_sub & (depth < sdd + sd)] = _IDX_DIRT
-    out[soft_sub & (depth >= sdd + sd)] = _IDX_STONE
-
-    # Layered (gravel, sand, …) and Hard: stone directly after surface block layer
-    out[after_surf & (is_layered | is_hard)] = _IDX_STONE
+    # Below the surface block layer: stone
+    out[above_bed & (depth >= sdd)] = _IDX_STONE
 
     return out
 
@@ -370,56 +351,19 @@ def _pack_indices_numpy(flat: np.ndarray, bpb: int) -> np.ndarray:
 # Public chunk-level API
 # ---------------------------------------------------------------------------
 
-def _apply_gravity_erosion(
-    surface_grid:       np.ndarray,   # (16, 16) int32
-    surface_block_grid: np.ndarray,   # (16, 16) uint8  ← will be copied+modified
-    rules:              list[tuple[int, int]],   # [(from_palette_idx, to_palette_idx)]
-    threshold:          int,
-) -> np.ndarray:
-    """
-    Replace surface blocks on steep edges with a more stable material.
-
-    For each column, compute the maximum downward drop to any of the four
-    direct (N/S/E/W) neighbours.  When that drop ≥ threshold AND the column's
-    surface block matches a rule's "from" block, the block is swapped for the
-    rule's "to" block.
-
-    Chunk-border columns are padded with their own height value (drop = 0),
-    so erosion is conservatively skipped at edges where neighbour data is
-    unavailable.
-
-    Returns a new (16, 16) uint8 array.
-    """
-    result = surface_block_grid.copy()
-
-    # Pad with edge values so border columns see drop=0 towards the outside
-    padded = np.pad(surface_grid, 1, mode='edge')
-    max_drop = np.maximum.reduce([
-        surface_grid - padded[1:-1, :-2],   # vs west  (x-1)
-        surface_grid - padded[1:-1, 2:],    # vs east  (x+1)
-        surface_grid - padded[:-2, 1:-1],   # vs north (z-1)
-        surface_grid - padded[2:, 1:-1],    # vs south (z+1)
-    ])
-    steep = max_drop >= threshold
-
-    for from_idx, to_idx in rules:
-        result[(result == from_idx) & steep] = to_idx
-
-    return result
-
-
 def apply_heightmap_chunk(
     chunk_nbt:      nbtlib.Compound,
     surface_grid:   np.ndarray,     # (16,16) z×x int32
     surface_layers: list[dict],     # from config, with palette_idx already set
     water_level:    int,
     palette_names:  list[str],
-    chunk_cx:           int = 0,
-    chunk_cz:           int = 0,
-    surface_depth_min:  int = 1,
-    surface_depth_max:  int = 1,
-    gravity_erosion:    dict | None = None,
-    floor_y:            int = WORLD_MIN_Y,
+    chunk_cx:             int = 0,
+    chunk_cz:             int = 0,
+    surface_depth_min:    int = 1,
+    surface_depth_max:    int = 1,
+    floor_y:              int = WORLD_MIN_Y,
+    dirt_top_replacement: bool = True,
+    dirt_top_block:       str  = "minecraft:grass_block",
 ) -> None:
     """
     Replace block_states in every section of a chunk based on surface_grid.
@@ -435,29 +379,17 @@ def apply_heightmap_chunk(
     surf_max = int(surface_grid.max())
     fill_max = max(surf_max, water_level - 1)    # water can raise effective ceiling
 
-    soil_depth_grid    = _compute_soil_depth(surface_grid)
     surface_block_grid = _select_surface_blocks(surface_grid, surface_layers, chunk_cx, chunk_cz)
 
-    if gravity_erosion and gravity_erosion.get("enabled", False):
-        threshold = int(gravity_erosion.get("threshold", 4))
-        name_to_idx = {n: i for i, n in enumerate(palette_names)}
-        rules = []
-        for rule in gravity_erosion.get("rules", []):
-            from_idx = name_to_idx.get(rule.get("from"))
-            to_idx   = name_to_idx.get(rule.get("to"))
-            if from_idx is not None and to_idx is not None:
-                rules.append((from_idx, to_idx))
-        if rules:
-            surface_block_grid = _apply_gravity_erosion(
-                surface_grid, surface_block_grid, rules, threshold
-            )
-
-    # Replace dirt surface blocks with grass_block at depth 0
-    if np.any(surface_block_grid == _IDX_DIRT):
-        if "minecraft:grass_block" not in palette_names:
-            palette_names.append("minecraft:grass_block")
-        grass_idx = palette_names.index("minecraft:grass_block")
-        surface_block_grid[surface_block_grid == _IDX_DIRT] = grass_idx
+    # Build the top-layer block grid (depth=0 only).
+    # When dirt_top_replacement is enabled, columns whose surface block is dirt
+    # get dirt_top_block placed at the very top instead.
+    top_surface_block_grid = surface_block_grid.copy()
+    if dirt_top_replacement and np.any(surface_block_grid == _IDX_DIRT):
+        if dirt_top_block not in palette_names:
+            palette_names.append(dirt_top_block)
+        top_idx = palette_names.index(dirt_top_block)
+        top_surface_block_grid[surface_block_grid == _IDX_DIRT] = top_idx
 
     surface_depth_grid = _compute_surface_depth(surface_grid, chunk_cx, chunk_cz, surface_depth_min, surface_depth_max)
 
@@ -478,8 +410,9 @@ def apply_heightmap_chunk(
 
         indices = _compute_section_indices(
             sec_y, surface_grid, surface_block_grid,
-            water_level, soil_depth_grid, palette_names,
+            water_level, palette_names,
             surface_depth_grid, floor_y,
+            top_surface_block_grid,
         )
         flat = indices.flatten().astype(np.uint64)
 

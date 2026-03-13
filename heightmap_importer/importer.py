@@ -46,9 +46,10 @@ def import_heightmap(
     surface_layers:     list  = None,
     surface_depth_min:  int   = 1,
     surface_depth_max:  int   = 1,
-    gravity_erosion:    dict  = None,
-    bedrock_floor:      bool  = True,
-    scale:              int   = 1,
+    bedrock_floor:        bool  = True,
+    scale:                int   = 1,
+    dirt_top_replacement: bool  = True,
+    dirt_top_block:       str   = "minecraft:grass_block",
     verbose:            bool  = True,
     terrain_smoothing:  bool  = True,
     hydraulic_erosion:  bool  = False,
@@ -95,6 +96,12 @@ def import_heightmap(
         thermal=thermal_erosion, thermal_iterations=thermal_iterations,
         thermal_talus=thermal_talus,
     )
+    # Resize to the exact target block dimensions so each block column gets
+    # its own bilinearly-interpolated height instead of multiple blocks
+    # sharing one pixel (which causes scale×scale flat-block artefacts).
+    if scale > 1:
+        hm.resize(hm.width * scale, hm.height * scale)
+        scale = 1
     total_x = hm.width  * scale
     total_z = hm.height * scale
 
@@ -160,8 +167,9 @@ def import_heightmap(
                 chunk_cx=chunk_x, chunk_cz=chunk_z,
                 surface_depth_min=surface_depth_min,
                 surface_depth_max=surface_depth_max,
-                gravity_erosion=gravity_erosion,
                 floor_y=min_y - 1 if bedrock_floor else min_y,
+                dirt_top_replacement=dirt_top_replacement,
+                dirt_top_block=dirt_top_block,
             )
             update_heightmaps(chunk_nbt, surface_grid)
             region.write_chunk_nbt(cx_local, cz_local, chunk_nbt)

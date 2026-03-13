@@ -64,6 +64,26 @@ class HeightMap:
             min_y + (max_y - min_y) * normalized
         ).astype(np.int32)                                # (H, W)
 
+    def resize(self, new_width: int, new_height: int) -> None:
+        """Resize the internal height array using bilinear interpolation.
+
+        Use this to scale the heightmap to the exact world dimensions so that
+        each Minecraft block column gets its own interpolated height value
+        instead of multiple blocks sharing the same pixel (which causes NxN
+        flat-block artefacts).
+        """
+        if new_width == self.width and new_height == self.height:
+            return
+        span = max(1, self.max_y - self.min_y)
+        normalized = (self._heights.astype(np.float32) - self.min_y) / span
+        pil_img = Image.fromarray(normalized, mode="F")
+        pil_img = pil_img.resize((new_width, new_height), Image.BILINEAR)
+        self._heights = np.round(
+            self.min_y + span * np.array(pil_img, dtype=np.float32)
+        ).astype(np.int32)
+        self.width  = new_width
+        self.height = new_height
+
     def get_height(self, px: int, pz: int) -> int:
         """Return the MC Y height for pixel coordinate (px, pz)."""
         if px < 0 or px >= self.width or pz < 0 or pz >= self.height:

@@ -278,11 +278,12 @@ def main():
         print(f"\n[{step}] 套用地形至 MC 存檔...")
 
     from heightmap_importer.importer import import_heightmap
-    surface_layers     = _CFG.get("surface_layers", None)
-    surface_depth_min  = _CFG.get("surface_depth_min", 1)
-    surface_depth_max  = _CFG.get("surface_depth_max", 1)
-    gravity_erosion    = _CFG.get("gravity_erosion", None)
-    bedrock_floor      = _CFG.get("bedrock_floor", True)
+    surface_layers        = _CFG.get("surface_layers", None)
+    surface_depth_min     = _CFG.get("surface_depth_min", 1)
+    surface_depth_max     = _CFG.get("surface_depth_max", 1)
+    bedrock_floor         = _CFG.get("bedrock_floor", True)
+    dirt_top_replacement  = _CFG.get("dirt_top_replacement", True)
+    dirt_top_block        = _CFG.get("dirt_top_block", "minecraft:grass_block")
 
     try:
         _t0 = time.perf_counter()
@@ -299,9 +300,10 @@ def main():
             surface_layers      = surface_layers,
             surface_depth_min   = surface_depth_min,
             surface_depth_max   = surface_depth_max,
-            gravity_erosion     = gravity_erosion,
-            bedrock_floor       = bedrock_floor,
-            scale               = args.scale,
+            bedrock_floor         = bedrock_floor,
+            scale                 = args.scale,
+            dirt_top_replacement  = dirt_top_replacement,
+            dirt_top_block        = dirt_top_block,
             verbose             = verbose,
             terrain_smoothing   = not args.no_terrain_smoothing,
             hydraulic_erosion   = not args.no_hydraulic_erosion,
