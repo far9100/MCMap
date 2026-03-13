@@ -8,6 +8,7 @@ Workflow:
   4. Save modified region files back to the output directory.
 """
 
+import copy
 import shutil
 from pathlib import Path
 
@@ -17,29 +18,58 @@ from tqdm import tqdm
 
 from .heightmap import HeightMap
 from .region import get_or_create_region
-from .chunk import apply_heightmap_chunk, update_heightmaps, WORLD_MIN_Y, WORLD_MAX_Y
+from .chunk import apply_heightmap_chunk, update_heightmaps, build_palette, WORLD_MIN_Y, WORLD_MAX_Y
 
 
 # DataVersion for Minecraft Java Edition 1.21.1
 DATA_VERSION = 3955
 
+# Default surface layer config (used when none provided)
+DEFAULT_SURFACE_LAYERS = [
+    {"block": "minecraft:grass_block", "max_y": 71,  "min_y": -64, "blend": 0},
+    {"block": "minecraft:gravel",      "max_y": 127, "min_y": 72,  "blend": 8},
+    {"block": "minecraft:stone",       "max_y": 191, "min_y": 128, "blend": 8},
+    {"block": "minecraft:snow_block",  "max_y": 255, "min_y": 192, "blend": 8},
+]
+
 
 def import_heightmap(
-    world_dir:  str,
-    output_dir: str,
-    image_path: str,
-    origin_x:   int,
-    origin_z:   int,
-    min_y:      int  = -60,
-    max_y:      int  = 200,
-    sea_level:  int  = 63,
-    snow_line:  int  = 140,
-    scale:      int  = 1,
-    verbose:    bool = True,
+    world_dir:          str,
+    output_dir:         str,
+    image_path:         str,
+    origin_x:           int,
+    origin_z:           int,
+    min_y:              int   = -60,
+    max_y:              int   = 200,
+    sea_level:          int   = 63,
+    water_level:        int   = 64,
+    surface_layers:     list  = None,
+    surface_depth_min:  int   = 1,
+    surface_depth_max:  int   = 1,
+    gravity_erosion:    dict  = None,
+    bedrock_floor:      bool  = True,
+    scale:              int   = 1,
+    verbose:            bool  = True,
+    terrain_smoothing:  bool  = True,
+    hydraulic_erosion:  bool  = False,
+    hydraulic_droplets: int   = 20_000,
+    thermal_erosion:    bool  = False,
+    thermal_iterations: int   = 50,
+    thermal_talus:      float = 0.05,
 ) -> None:
     """
     Apply a grayscale heightmap to a Minecraft 1.21.1 world.
     """
+    if surface_layers is None:
+        surface_layers = DEFAULT_SURFACE_LAYERS
+
+    # Work on a shallow copy so we can annotate palette_idx without
+    # mutating the caller's list.
+    layers = copy.deepcopy(surface_layers)
+
+    # Build palette and annotate each layer with its palette index.
+    palette_names, _ = build_palette(layers)
+
     # ------------------------------------------------------------------
     # 1. Copy world to output directory
     # ------------------------------------------------------------------
@@ -59,7 +89,12 @@ def import_heightmap(
     # ------------------------------------------------------------------
     # 2. Prepare
     # ------------------------------------------------------------------
-    hm      = HeightMap(image_path, min_y=min_y, max_y=max_y)
+    hm = HeightMap(
+        image_path, min_y=min_y, max_y=max_y, smooth=terrain_smoothing,
+        hydraulic=hydraulic_erosion, hydraulic_droplets=hydraulic_droplets,
+        thermal=thermal_erosion, thermal_iterations=thermal_iterations,
+        thermal_talus=thermal_talus,
+    )
     total_x = hm.width  * scale
     total_z = hm.height * scale
 
@@ -70,7 +105,6 @@ def import_heightmap(
 
     total_chunks = (chunk_x1 - chunk_x0 + 1) * (chunk_z1 - chunk_z0 + 1)
 
-    # Cache open RegionFile objects (keyed by region coords)
     open_regions: dict = {}
 
     def get_region(cx: int, cz: int):
@@ -105,10 +139,8 @@ def import_heightmap(
             if chunk_nbt is None:
                 chunk_nbt = _blank_chunk(chunk_x, chunk_z)
 
-            # Build surface_grid (16×16) as numpy array
             surface_grid = np.full((16, 16), min_y, dtype=np.int32)
 
-            # Compute which pixel columns overlap this chunk
             for local_bx in range(16):
                 world_x = chunk_x * 16 + local_bx
                 if world_x < origin_x or world_x >= origin_x + total_x:
@@ -122,8 +154,15 @@ def import_heightmap(
                     pz = (world_z - origin_z) // scale
                     surface_grid[local_bz, local_bx] = hm.get_height(px, pz)
 
-            # Apply terrain and heightmap in one vectorised pass each
-            apply_heightmap_chunk(chunk_nbt, surface_grid, sea_level, snow_line)
+            apply_heightmap_chunk(
+                chunk_nbt, surface_grid,
+                layers, water_level, palette_names,
+                chunk_cx=chunk_x, chunk_cz=chunk_z,
+                surface_depth_min=surface_depth_min,
+                surface_depth_max=surface_depth_max,
+                gravity_erosion=gravity_erosion,
+                floor_y=min_y - 1 if bedrock_floor else min_y,
+            )
             update_heightmaps(chunk_nbt, surface_grid)
             region.write_chunk_nbt(cx_local, cz_local, chunk_nbt)
 
@@ -148,19 +187,19 @@ def import_heightmap(
 def _blank_chunk(chunk_x: int, chunk_z: int) -> nbtlib.File:
     """Create a minimal valid chunk for MC 1.21.1."""
     return nbtlib.File({
-        "DataVersion":   nbtlib.Int(DATA_VERSION),
-        "xPos":          nbtlib.Int(chunk_x),
-        "zPos":          nbtlib.Int(chunk_z),
-        "yPos":          nbtlib.Int(-4),          # minimum section Y
-        "Status":        nbtlib.String("minecraft:full"),
-        "LastUpdate":    nbtlib.Long(0),
-        "InhabitedTime": nbtlib.Long(0),
-        "isLightOn":     nbtlib.Byte(0),
-        "sections":      nbtlib.List[nbtlib.Compound](),
-        "Heightmaps":    nbtlib.Compound(),
+        "DataVersion":    nbtlib.Int(DATA_VERSION),
+        "xPos":           nbtlib.Int(chunk_x),
+        "zPos":           nbtlib.Int(chunk_z),
+        "yPos":           nbtlib.Int(-4),
+        "Status":         nbtlib.String("minecraft:full"),
+        "LastUpdate":     nbtlib.Long(0),
+        "InhabitedTime":  nbtlib.Long(0),
+        "isLightOn":      nbtlib.Byte(0),
+        "sections":       nbtlib.List[nbtlib.Compound](),
+        "Heightmaps":     nbtlib.Compound(),
         "block_entities": nbtlib.List[nbtlib.Compound](),
-        "fluid_ticks":   nbtlib.List[nbtlib.Compound](),
-        "block_ticks":   nbtlib.List[nbtlib.Compound](),
+        "fluid_ticks":    nbtlib.List[nbtlib.Compound](),
+        "block_ticks":    nbtlib.List[nbtlib.Compound](),
         "PostProcessing": nbtlib.List[nbtlib.List](),
         "structures": nbtlib.Compound({
             "References": nbtlib.Compound(),

@@ -1,8 +1,33 @@
 {
-  "min_y": -63,
-  "max_y": 319,
+  "min_y": 0,
+  "max_y": 255,
   "sea_level": 0,
-  "snow_line": 256,
+  "snow_line": 192,
   "region_origin": [0, 0],
-  "region_size": [2, 2]
+  "region_size": [1, 1],
+  "terrain_smoothing": true,
+  "hydraulic_erosion": false,
+  "hydraulic_erosion_droplets": 20000,
+  "thermal_erosion": true,
+  "thermal_erosion_iterations": 50,
+  "thermal_erosion_talus": 0.05,
+  "water_level": 24,
+  "bedrock_floor": true,
+  "surface_depth_min": 4,
+  "surface_depth_max": 8,
+  "gravity_erosion": {
+    "enabled": true,
+    "threshold": 4,
+    "rules": [
+      {"from": "minecraft:gravel", "to": "minecraft:stone"}
+    ]
+  },
+  "surface_layers": [
+    {"block": "minecraft:gravel",      "max_y":   8, "min_y":  1, "blend":  4},
+    {"block": "minecraft:sand",        "max_y":  36, "min_y":  9, "blend":  4},
+    {"block": "minecraft:dirt",        "max_y":  72, "min_y": 37, "blend":  10},
+    {"block": "minecraft:gravel",      "max_y": 128, "min_y": 73, "blend":  10},
+    {"block": "minecraft:stone",       "max_y": 192, "min_y": 129, "blend":  10},
+    {"block": "minecraft:snow_block",  "max_y": 255, "min_y": 193, "blend":  10}
+  ]
 }

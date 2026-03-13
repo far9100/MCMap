@@ -55,7 +55,6 @@ _CFG = _load_config()
 # ---------------------------------------------------------------------------
 
 def _parse_args():
-    # Derive defaults from config
     _ro = _CFG.get("region_origin", [0, 0])
     _rs = _CFG.get("region_size",   [2, 2])
     _default_x = _ro[0] * 512
@@ -87,9 +86,11 @@ def _parse_args():
     p.add_argument("--max-y", type=int, default=_CFG.get("max_y", 200),
                    help=f"像素值 255（白）對應的 Y 高度（config 預設：{_CFG.get('max_y', 200)}）")
     p.add_argument("--sea-level", type=int, default=_CFG.get("sea_level", 63),
-                   help=f"海平面 Y（config 預設：{_CFG.get('sea_level', 63)}）")
-    p.add_argument("--snow-line", type=int, default=_CFG.get("snow_line", 140),
-                   help=f"雪線 Y，此高度以上表面為 snow_block（config 預設：{_CFG.get('snow_line', 140)}）")
+                   help=f"海平面 Y（預覽用，config 預設：{_CFG.get('sea_level', 63)}）")
+    p.add_argument("--snow-line", type=int, default=_CFG.get("snow_line", 192),
+                   help=f"雪線 Y（預覽用，config 預設：{_CFG.get('snow_line', 192)}）")
+    p.add_argument("--water-level", type=int, default=_CFG.get("water_level", 64),
+                   help=f"水面 Y，低於此高度的空氣格填充水（config 預設：{_CFG.get('water_level', 64)}）")
     p.add_argument("--scale", type=int, default=None,
                    help="每像素對應幾個 MC 方塊（整數 ≥ 1；省略時依 region_size 與圖片尺寸自動計算）")
 
@@ -106,6 +107,26 @@ def _parse_args():
                    help="預覽後自動確認，不詢問（搭配預覽使用）")
     p.add_argument("--quiet", "-q", action="store_true",
                    help="不顯示進度訊息")
+    p.add_argument("--no-terrain-smoothing", action="store_true",
+                   default=not _CFG.get("terrain_smoothing", True),
+                   help="停用地形平滑（高斯模糊）優化")
+
+    # Erosion options
+    p.add_argument("--no-hydraulic-erosion", action="store_true",
+                   default=not _CFG.get("hydraulic_erosion", True),
+                   help="停用水力侵蝕模擬（config 預設：開啟）")
+    p.add_argument("--hydraulic-droplets", type=int,
+                   default=_CFG.get("hydraulic_erosion_droplets", 20_000),
+                   help=f"水力侵蝕雨滴數量（config 預設：{_CFG.get('hydraulic_erosion_droplets', 20_000)}）")
+    p.add_argument("--no-thermal-erosion", action="store_true",
+                   default=not _CFG.get("thermal_erosion", True),
+                   help="停用熱侵蝕模擬（config 預設：開啟）")
+    p.add_argument("--thermal-iterations", type=int,
+                   default=_CFG.get("thermal_erosion_iterations", 50),
+                   help=f"熱侵蝕迭代次數（config 預設：{_CFG.get('thermal_erosion_iterations', 50)}）")
+    p.add_argument("--thermal-talus", type=float,
+                   default=_CFG.get("thermal_erosion_talus", 0.05),
+                   help=f"熱侵蝕斜坡閾值，正規化 0-1（config 預設：{_CFG.get('thermal_erosion_talus', 0.05)}）")
 
     return p.parse_args()
 
@@ -130,23 +151,19 @@ def _resolve_origin_and_scale(args, image_path: Path | None):
     Resolve args.x, args.z, args.scale from region_origin / region_size
     if not explicitly provided.  Mutates args in-place.
     """
-    # Determine effective region_origin and region_size
     cfg_ro = _CFG.get("region_origin", [0, 0])
     cfg_rs = _CFG.get("region_size",   [2, 2])
     ro = args.region_origin if args.region_origin is not None else cfg_ro
     rs = args.region_size   if args.region_size   is not None else cfg_rs
 
-    # Store back so _print_banner can reference them
     args.region_origin = ro
     args.region_size   = rs
 
-    # Derive --x / --z from region northwest corner
     if args.x is None:
         args.x = ro[0] * 512
     if args.z is None:
         args.z = ro[1] * 512
 
-    # Auto-calculate scale from region_size vs image dimensions
     if args.scale is None:
         if image_path is not None and image_path.exists():
             from PIL import Image as _Img
@@ -156,7 +173,7 @@ def _resolve_origin_and_scale(args, image_path: Path | None):
             block_h = rs[1] * 512
             scale_w = max(1, block_w // img_w) if img_w > 0 else 1
             scale_h = max(1, block_h // img_h) if img_h > 0 else 1
-            args.scale = min(scale_w, scale_h)   # use the smaller so terrain fits
+            args.scale = min(scale_w, scale_h)
         else:
             args.scale = 1
 
@@ -164,7 +181,6 @@ def _resolve_origin_and_scale(args, image_path: Path | None):
 def _validate(args, image_path: Path | None) -> list[str]:
     errors = []
 
-    # World validation is skipped in --preview-only mode
     if not args.preview_only:
         world = Path(args.world)
         if not world.exists():
@@ -262,20 +278,37 @@ def main():
         print(f"\n[{step}] 套用地形至 MC 存檔...")
 
     from heightmap_importer.importer import import_heightmap
+    surface_layers     = _CFG.get("surface_layers", None)
+    surface_depth_min  = _CFG.get("surface_depth_min", 1)
+    surface_depth_max  = _CFG.get("surface_depth_max", 1)
+    gravity_erosion    = _CFG.get("gravity_erosion", None)
+    bedrock_floor      = _CFG.get("bedrock_floor", True)
+
     try:
         _t0 = time.perf_counter()
         import_heightmap(
-            world_dir  = args.world,
-            output_dir = args.output,
-            image_path = str(image_path),
-            origin_x   = args.x,
-            origin_z   = args.z,
-            min_y      = args.min_y,
-            max_y      = args.max_y,
-            sea_level  = args.sea_level,
-            snow_line  = args.snow_line,
-            scale      = args.scale,
-            verbose    = verbose,
+            world_dir           = args.world,
+            output_dir          = args.output,
+            image_path          = str(image_path),
+            origin_x            = args.x,
+            origin_z            = args.z,
+            min_y               = args.min_y,
+            max_y               = args.max_y,
+            sea_level           = args.sea_level,
+            water_level         = args.water_level,
+            surface_layers      = surface_layers,
+            surface_depth_min   = surface_depth_min,
+            surface_depth_max   = surface_depth_max,
+            gravity_erosion     = gravity_erosion,
+            bedrock_floor       = bedrock_floor,
+            scale               = args.scale,
+            verbose             = verbose,
+            terrain_smoothing   = not args.no_terrain_smoothing,
+            hydraulic_erosion   = not args.no_hydraulic_erosion,
+            hydraulic_droplets  = args.hydraulic_droplets,
+            thermal_erosion     = not args.no_thermal_erosion,
+            thermal_iterations  = args.thermal_iterations,
+            thermal_talus       = args.thermal_talus,
         )
         t_apply = time.perf_counter() - _t0
     except KeyboardInterrupt:
@@ -311,9 +344,22 @@ def _print_banner(args, image_path):
     print(f"  Region 起點: r.{ro[0]}.{ro[1]}  大小: {rs[0]}×{rs[1]} regions ({rs[0]*512}×{rs[1]*512} 格)")
     print(f"  起始座標  : X={args.x}, Z={args.z}")
     print(f"  Y 範圍    : {args.min_y} ~ {args.max_y}")
-    print(f"  海平面    : Y={args.sea_level}")
-    print(f"  雪線      : Y={args.snow_line}")
+    print(f"  海平面    : Y={args.sea_level}  （預覽用）")
+    print(f"  水面      : Y={args.water_level}  （低於此高度填水）")
+    # Show surface layers from config
+    layers = _CFG.get("surface_layers", None)
+    if layers:
+        print("  表面方塊層：")
+        for lyr in sorted(layers, key=lambda l: l["max_y"], reverse=True):
+            blend_str = f"  模糊 {lyr['blend']} 格" if lyr.get("blend", 0) > 0 else ""
+            print(f"    Y {lyr['min_y']:>4} ~ {lyr['max_y']:<4}  {lyr['block']}{blend_str}")
+    print(f"  表面方塊深度: {_CFG.get('surface_depth_min', 1)}～{_CFG.get('surface_depth_max', 1)} 格（坡度+雜訊動態調整）")
     print(f"  縮放比例  : {args.scale} 格/像素")
+    print(f"  地形平滑  : {'開啟' if not args.no_terrain_smoothing else '關閉'}")
+    print(f"  水力侵蝕  : {'開啟' if not args.no_hydraulic_erosion else '關閉'}"
+          + (f"（雨滴 {args.hydraulic_droplets}）" if not args.no_hydraulic_erosion else ""))
+    print(f"  熱侵蝕    : {'開啟' if not args.no_thermal_erosion else '關閉'}"
+          + (f"（迭代 {args.thermal_iterations}，talus {args.thermal_talus}）" if not args.no_thermal_erosion else ""))
     print("-" * 64)
 
 
