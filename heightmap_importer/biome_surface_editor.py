@@ -83,6 +83,8 @@ def show_biome_surface_editor(
     biome_surface_layers:  dict,
     min_y:                 int,
     max_y:                 int,
+    dirt_top_replacement:  bool = True,
+    dirt_top_block:        str  = "minecraft:grass_block",
 ) -> "dict | None":
     """
     Show the per-biome surface layer editor.
@@ -200,6 +202,33 @@ def show_biome_surface_editor(
              bg=DARK, fg=FG_DIM,
              font=("Consolas", 8), wraplength=700, anchor=tk.W,
              justify=tk.LEFT).pack(anchor=tk.W, pady=(0, 6))
+
+    # ── Dirt-top global settings ───────────────────────────────────────────
+    dirt_frame = tk.Frame(right_frame, bg="#222233", bd=1, relief=tk.GROOVE)
+    dirt_frame.pack(fill=tk.X, pady=(0, 6))
+
+    tk.Label(dirt_frame, text="Dirt Top 設定",
+             bg="#222233", fg="#AABBDD", font=("Consolas", 8, "bold")).pack(
+                 side=tk.LEFT, padx=(6, 8))
+
+    dirt_top_var = tk.BooleanVar(value=dirt_top_replacement)
+    tk.Checkbutton(
+        dirt_frame, text="啟用 dirt_top_replacement",
+        variable=dirt_top_var,
+        bg="#222233", fg="#CCDDEE",
+        selectcolor="#1A1A2A", activebackground="#222233",
+        font=("Consolas", 8),
+    ).pack(side=tk.LEFT, padx=(0, 8))
+
+    tk.Label(dirt_frame, text="替換方塊：",
+             bg="#222233", fg="#CCDDEE", font=("Consolas", 8)).pack(side=tk.LEFT)
+
+    dirt_block_var = tk.StringVar(value=dirt_top_block)
+    tk.Entry(
+        dirt_frame, textvariable=dirt_block_var, width=24,
+        bg="#1A1A2A", fg="#DDDDFF", insertbackground="#DDDDFF",
+        bd=1, relief=tk.SUNKEN, font=("Consolas", 8),
+    ).pack(side=tk.LEFT, padx=(0, 6), pady=3)
 
     editor_frame = tk.Frame(right_frame, bg=DARK)
     editor_frame.pack(fill=tk.BOTH, expand=True)
@@ -549,6 +578,8 @@ def show_biome_surface_editor(
     def on_confirm() -> None:
         _save_rows_to_data()
         out: dict = {k: copy.deepcopy(v) for k, v in data.items()}
+        out["_dirt_top_replacement"] = dirt_top_var.get()
+        out["_dirt_top_block"]       = dirt_block_var.get().strip() or "minecraft:grass_block"
         result[0] = out
         root.destroy()
 

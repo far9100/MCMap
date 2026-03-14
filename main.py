@@ -317,8 +317,12 @@ def main():
                     biome_surface_layers = _existing_bsl,
                     min_y                = args.min_y,
                     max_y                = args.max_y,
+                    dirt_top_replacement = _CFG.get("dirt_top_replacement", True),
+                    dirt_top_block       = _CFG.get("dirt_top_block", "minecraft:grass_block"),
                 )
                 if updated_bsl is not None:
+                    dirt_top_replacement = updated_bsl.pop("_dirt_top_replacement", dirt_top_replacement)
+                    dirt_top_block       = updated_bsl.pop("_dirt_top_block",       dirt_top_block)
                     biome_surface_layers = updated_bsl
                     if verbose:
                         custom_count = len(biome_surface_layers)
