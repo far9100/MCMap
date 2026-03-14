@@ -62,6 +62,8 @@ def import_heightmap(
     thermal_talus:      float = 0.05,
     biome_config:       dict  = None,
     biome_surface_layers: dict = None,  # {biome_id: [layer_dicts]}
+    subsurface_layers:  "list[dict] | None" = None,         # default sub-surface layers
+    biome_subsurface_layers: "dict | None" = None,          # {biome_id: [sub-layer dicts]}
 ) -> None:
     """
     Apply a grayscale heightmap to a Minecraft 1.21.1 world.
@@ -72,6 +74,8 @@ def import_heightmap(
     """
     if biome_surface_layers is None:
         biome_surface_layers = {}
+    if biome_subsurface_layers is None:
+        biome_subsurface_layers = {}
 
     # If biome_surface_layers provides a _default, use it as the effective
     # fallback; otherwise fall back to surface_layers or the built-in default.
@@ -83,19 +87,42 @@ def import_heightmap(
     # mutating the caller's lists.
     layers = copy.deepcopy(effective_default)
 
-    # Deep-copy per-biome layers, excluding _default (handled above)
+    # Deep-copy per-biome surface layers, excluding _default (handled above)
     biome_layers_copy: dict[str, list[dict]] = {
         biome: copy.deepcopy(blayers)
         for biome, blayers in biome_surface_layers.items()
         if biome != "_default"
     }
 
-    # Build a master palette covering ALL blocks (default + per-biome).
+    # Build a master palette covering ALL surface blocks (default + per-biome).
     # build_palette annotates every layer dict with 'palette_idx' in-place.
     all_layers_for_palette = list(layers)
     for blayers in biome_layers_copy.values():
         all_layers_for_palette.extend(blayers)
     palette_names, _ = build_palette(all_layers_for_palette)
+
+    # Resolve subsurface default (editor _default overrides config subsurface_layers)
+    effective_sub_default = (
+        biome_subsurface_layers.get("_default") or subsurface_layers or []
+    )
+    sub_layers = copy.deepcopy(effective_sub_default)
+
+    # Deep-copy per-biome subsurface layers, excluding _default
+    biome_sub_copy: dict[str, list[dict]] = {
+        biome: copy.deepcopy(blayers)
+        for biome, blayers in biome_subsurface_layers.items()
+        if biome != "_default"
+    }
+
+    # Pre-add ALL possible subsurface block names to the master palette
+    # (covers default + every biome override) so bpb is stable across chunks.
+    all_sub_for_palette = list(sub_layers)
+    for blayers in biome_sub_copy.values():
+        all_sub_for_palette.extend(blayers)
+    for sl in all_sub_for_palette:
+        sb_name = sl.get("block", "minecraft:stone")
+        if sb_name not in palette_names:
+            palette_names.append(sb_name)
 
     # ------------------------------------------------------------------
     # 1. Copy world to output directory
@@ -213,6 +240,8 @@ def import_heightmap(
                 dirt_top_block=dirt_top_block,
                 biome_grid=biome_grid,
                 biome_surface_layers_map=biome_layers_copy if biome_layers_copy else None,
+                subsurface_layers=sub_layers,
+                biome_subsurface_layers_map=biome_sub_copy if biome_sub_copy else None,
             )
             update_heightmaps(chunk_nbt, surface_grid)
             region.write_chunk_nbt(cx_local, cz_local, chunk_nbt)

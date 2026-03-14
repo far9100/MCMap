@@ -20,12 +20,16 @@
   "dirt_top_replacement": true,
   "dirt_top_block": "minecraft:grass_block",
   "surface_layers": [
-    {"block": "minecraft:gravel",     "max_y":16, "min_y":1,  "blend":4,"slope_threshold": 2.0, "steep_block": "minecraft:stone"},
+    {"block": "minecraft:gravel",     "max_y":16, "min_y":-63,  "blend":4,"slope_threshold": 2.0, "steep_block": "minecraft:stone"},
     {"block": "minecraft:sand",       "max_y":36, "min_y":17, "blend":4,"slope_threshold": 1.5, "steep_block": "minecraft:stone"},
     {"block": "minecraft:dirt",       "max_y":72, "min_y":37, "blend":8,"slope_threshold": 1.5, "steep_block": "minecraft:stone"},
     {"block": "minecraft:gravel",     "max_y":128,"min_y":73, "blend":8,"slope_threshold": 2.0, "steep_block": "minecraft:stone"},
     {"block": "minecraft:stone",      "max_y":192,"min_y":129,"blend":8},
-    {"block": "minecraft:snow_block", "max_y":255,"min_y":193,"blend":8,"slope_threshold": 3.0, "steep_block": "minecraft:stone"}
+    {"block": "minecraft:snow_block", "max_y":319,"min_y":193,"blend":8,"slope_threshold": 3.0, "steep_block": "minecraft:stone"}
+  ],
+  "subsurface_layers": [
+    {"block": "minecraft:deepslate", "min_y": -63, "max_y": -1, "blend": 4},
+    {"block": "minecraft:stone",     "min_y":   0, "max_y": 319, "blend": 4}
   ],
   "biome_grid": {
     "enabled": true,

@@ -244,6 +244,11 @@ def main():
         k: v for k, v in _CFG.get("biome_surface_layers", {}).items()
         if not k.startswith("_")
     }
+    subsurface_layers: list = _CFG.get("subsurface_layers", [])
+    biome_subsurface_layers: dict = {
+        k: v for k, v in _CFG.get("biome_subsurface_layers", {}).items()
+        if not k.startswith("_")
+    }
 
     # ── Step 1: Preview ──────────────────────────────────────────────────
     if not args.no_preview:
@@ -312,17 +317,22 @@ def main():
                 if verbose:
                     print(f"\n  開啟表面方塊層編輯器（{len(_unique_biomes)} 個生態域）...")
                 updated_bsl = show_biome_surface_editor(
-                    selected_biomes      = _unique_biomes,
-                    default_layers       = _surface_layers_cfg,
-                    biome_surface_layers = _existing_bsl,
-                    min_y                = args.min_y,
-                    max_y                = args.max_y,
-                    dirt_top_replacement = _CFG.get("dirt_top_replacement", True),
-                    dirt_top_block       = _CFG.get("dirt_top_block", "minecraft:grass_block"),
+                    selected_biomes          = _unique_biomes,
+                    default_layers           = _surface_layers_cfg,
+                    biome_surface_layers     = _existing_bsl,
+                    min_y                    = args.min_y,
+                    max_y                    = args.max_y,
+                    dirt_top_replacement     = _CFG.get("dirt_top_replacement", True),
+                    dirt_top_block           = _CFG.get("dirt_top_block", "minecraft:grass_block"),
+                    subsurface_layers        = subsurface_layers,
+                    biome_subsurface_layers  = biome_subsurface_layers,
                 )
                 if updated_bsl is not None:
-                    dirt_top_replacement = updated_bsl.pop("_dirt_top_replacement", dirt_top_replacement)
-                    dirt_top_block       = updated_bsl.pop("_dirt_top_block",       dirt_top_block)
+                    dirt_top_replacement = updated_bsl.pop("_dirt_top_replacement", _CFG.get("dirt_top_replacement", True))
+                    dirt_top_block       = updated_bsl.pop("_dirt_top_block",       _CFG.get("dirt_top_block", "minecraft:grass_block"))
+                    _bsl_result          = updated_bsl.pop("_biome_subsurface_layers", {})
+                    subsurface_layers    = _bsl_result.get("_default", subsurface_layers)
+                    biome_subsurface_layers = {k: v for k, v in _bsl_result.items() if k != "_default"}
                     biome_surface_layers = updated_bsl
                     if verbose:
                         custom_count = len(biome_surface_layers)
@@ -364,6 +374,7 @@ def main():
     bedrock_floor         = _CFG.get("bedrock_floor", True)
     dirt_top_replacement  = _CFG.get("dirt_top_replacement", True)
     dirt_top_block        = _CFG.get("dirt_top_block", "minecraft:grass_block")
+    # subsurface_layers already set above (may have been updated by biome editor)
 
     try:
         _t0 = time.perf_counter()
@@ -393,8 +404,10 @@ def main():
             thermal_erosion     = not args.no_thermal_erosion,
             thermal_iterations  = args.thermal_iterations,
             thermal_talus       = args.thermal_talus,
-            biome_config          = biome_config,
-            biome_surface_layers  = biome_surface_layers,
+            biome_config              = biome_config,
+            biome_surface_layers      = biome_surface_layers,
+            subsurface_layers         = subsurface_layers,
+            biome_subsurface_layers   = biome_subsurface_layers,
         )
         t_apply = time.perf_counter() - _t0
     except KeyboardInterrupt:

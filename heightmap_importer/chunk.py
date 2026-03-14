@@ -271,6 +271,8 @@ def _compute_section_indices(
     surface_depth_grid:   np.ndarray,   # (16,16) z×x int32  (1..max_depth)
     floor_y:              int = WORLD_MIN_Y,
     top_surface_block_grid: np.ndarray | None = None,   # (16,16) overrides depth-0 block
+    subsurface_layers:    "list[dict]" = [],             # global sub-surface fill layers
+    sub_rand:             "np.ndarray | None" = None,   # (16,16) blend noise for subsurface
 ) -> np.ndarray:
     """
     Return a (16,16,16) uint8 array of palette indices for one section.
@@ -322,8 +324,36 @@ def _compute_section_indices(
     sub_mask = above_bed & (depth > 0) & (depth < sdd)
     out[sub_mask] = sb[sub_mask]
 
-    # Below the surface block layer: stone
-    out[above_bed & (depth >= sdd)] = _IDX_STONE
+    # Below the surface block layer: stone (fallback)
+    deep_mask = above_bed & (depth >= sdd)
+    out[deep_mask] = _IDX_STONE
+
+    if subsurface_layers and sub_rand is not None:
+        rand3d = np.broadcast_to(sub_rand[np.newaxis, :, :], (16, 16, 16))
+        for layer in sorted(subsurface_layers, key=lambda l: l.get("max_y", 0)):
+            block  = layer.get("block", "minecraft:stone")
+            ly_min = layer.get("min_y", WORLD_MIN_Y)
+            ly_max = layer.get("max_y", WORLD_MAX_Y)
+            blend  = max(0, layer.get("blend", 0))
+
+            pidx = palette_names.index(block) if block in palette_names else _IDX_STONE
+
+            # Full zone
+            full = deep_mask & (wy >= ly_min) & (wy <= ly_max)
+            out[full] = pidx
+
+            if blend > 0:
+                # Lower blend [ly_min-blend, ly_min): probability rises 0→1
+                lo_floor = ly_min - blend
+                lo_zone  = deep_mask & (wy >= lo_floor) & (wy < ly_min)
+                lo_prob  = (wy.astype(np.float32) - lo_floor) / blend
+                out[lo_zone & (rand3d < lo_prob)] = pidx
+
+                # Upper blend (ly_max, ly_max+blend]: probability falls 1→0
+                hi_ceil = ly_max + blend
+                hi_zone = deep_mask & (wy > ly_max) & (wy <= hi_ceil)
+                hi_prob = (hi_ceil - wy.astype(np.float32)) / blend
+                out[hi_zone & (rand3d < hi_prob)] = pidx
 
     return out
 
@@ -385,16 +415,18 @@ def apply_heightmap_chunk(
     dirt_top_replacement: bool = True,
     dirt_top_block:       str  = "minecraft:grass_block",
     biome_grid=None,                    # BiomeGrid | None
-    biome_surface_layers_map: "dict | None" = None,  # {biome_id: layers}
+    biome_surface_layers_map: "dict | None" = None,      # {biome_id: layers}
+    subsurface_layers: "list[dict] | None" = None,        # default sub-surface layers
+    biome_subsurface_layers_map: "dict | None" = None,   # {biome_id: sub-layers}
 ) -> None:
     """
     Replace block_states in every section of a chunk based on surface_grid.
 
     Sections that are entirely air are removed to keep file size lean.
 
-    biome_surface_layers_map: optional per-biome layer overrides.  When
-    provided, the dominant biome of this chunk is looked up and its layers
-    are used instead of the global surface_layers (if an entry exists).
+    biome_surface_layers_map / biome_subsurface_layers_map: optional per-biome
+    layer overrides.  The dominant biome of this chunk is looked up and its
+    layers are used instead of the global defaults (if an entry exists).
     """
     sections: nbtlib.List = chunk_nbt.get("sections", nbtlib.List[nbtlib.Compound]())
     if "sections" not in chunk_nbt:
@@ -405,12 +437,16 @@ def apply_heightmap_chunk(
     surf_max = int(surface_grid.max())
     fill_max = max(surf_max, water_level - 1)    # water can raise effective ceiling
 
-    # Select per-biome layers when a map and biome grid are available
-    chunk_layers = surface_layers
-    if biome_surface_layers_map and biome_grid is not None:
+    # Determine dominant biome once (shared by surface + subsurface selection)
+    dominant_biome = None
+    if biome_grid is not None and (biome_surface_layers_map or biome_subsurface_layers_map):
         from collections import Counter
         section_biomes = biome_grid.get_section_biomes(chunk_cx, chunk_cz)
         dominant_biome = Counter(section_biomes).most_common(1)[0][0]
+
+    # Select per-biome surface layers
+    chunk_layers = surface_layers
+    if biome_surface_layers_map and dominant_biome is not None:
         if dominant_biome in biome_surface_layers_map:
             chunk_layers = biome_surface_layers_map[dominant_biome]
 
@@ -425,6 +461,20 @@ def apply_heightmap_chunk(
             palette_names.append(dirt_top_block)
         top_idx = palette_names.index(dirt_top_block)
         top_surface_block_grid[surface_block_grid == _IDX_DIRT] = top_idx
+
+    # Select per-biome subsurface layers
+    sub_layers = subsurface_layers or []
+    if biome_subsurface_layers_map and dominant_biome is not None:
+        if dominant_biome in biome_subsurface_layers_map:
+            sub_layers = biome_subsurface_layers_map[dominant_biome]
+
+    # Pre-register subsurface block names in palette before bpb is computed
+    for sub_layer in sub_layers:
+        sb_name = sub_layer.get("block", "minecraft:stone")
+        if sb_name not in palette_names:
+            palette_names.append(sb_name)
+
+    sub_rand = _smooth_blend_noise(chunk_cx, chunk_cz, global_seed=998) if sub_layers else None
 
     surface_depth_grid = _compute_surface_depth(surface_grid, chunk_cx, chunk_cz, surface_depth_min, surface_depth_max)
 
@@ -466,6 +516,8 @@ def apply_heightmap_chunk(
             water_level, palette_names,
             surface_depth_grid, floor_y,
             top_surface_block_grid,
+            subsurface_layers=sub_layers,
+            sub_rand=sub_rand,
         )
         flat = indices.flatten().astype(np.uint64)
 
