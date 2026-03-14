@@ -19,6 +19,7 @@ from tqdm import tqdm
 from .heightmap import HeightMap
 from .region import get_or_create_region
 from .chunk import apply_heightmap_chunk, update_heightmaps, build_palette, WORLD_MIN_Y, WORLD_MAX_Y
+from .biome import BiomeGrid
 
 
 # DataVersion for Minecraft Java Edition 1.21.1
@@ -59,6 +60,7 @@ def import_heightmap(
     thermal_erosion:    bool  = False,
     thermal_iterations: int   = 50,
     thermal_talus:      float = 0.05,
+    biome_config:       dict  = None,
 ) -> None:
     """
     Apply a grayscale heightmap to a Minecraft 1.21.1 world.
@@ -112,6 +114,20 @@ def import_heightmap(
     chunk_z0 = origin_z >> 4
     chunk_x1 = (origin_x + total_x - 1) >> 4
     chunk_z1 = (origin_z + total_z - 1) >> 4
+
+    # Build BiomeGrid from config (if enabled)
+    biome_grid: BiomeGrid | None = None
+    if biome_config and biome_config.get("enabled", True):
+        biome_grid = BiomeGrid(
+            cell_size     = biome_config.get("cell_size", 128),
+            grid          = biome_config.get("grid", None),
+            origin_x      = origin_x,
+            origin_z      = origin_z,
+            total_x       = total_x,
+            total_z       = total_z,
+            blend_enabled = biome_config.get("blend_enabled", False),
+            blend_radius  = biome_config.get("blend_radius", 8),
+        )
 
     total_chunks = (chunk_x1 - chunk_x0 + 1) * (chunk_z1 - chunk_z0 + 1)
 
@@ -173,6 +189,7 @@ def import_heightmap(
                 floor_y=min_y - 1 if bedrock_floor else min_y,
                 dirt_top_replacement=dirt_top_replacement,
                 dirt_top_block=dirt_top_block,
+                biome_grid=biome_grid,
             )
             update_heightmaps(chunk_nbt, surface_grid)
             region.write_chunk_nbt(cx_local, cz_local, chunk_nbt)

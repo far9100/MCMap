@@ -351,6 +351,26 @@ def _pack_indices_numpy(flat: np.ndarray, bpb: int) -> np.ndarray:
 # Public chunk-level API
 # ---------------------------------------------------------------------------
 
+def build_biome_nbt(biome_list: list[str]) -> nbtlib.Compound:
+    """
+    Build the NBT Compound for a section's 'biomes' field from 64 biome IDs.
+
+    If all entries share a single biome, only palette is emitted (no data array).
+    Otherwise bit-packed indices are written with bits_per_entry = max(1, ceil(log2(n))).
+    """
+    palette_list = list(dict.fromkeys(biome_list))  # deduplicate, preserve order
+    palette_nbt  = nbtlib.List[nbtlib.String]([nbtlib.String(b) for b in palette_list])
+
+    if len(palette_list) == 1:
+        return nbtlib.Compound({"palette": palette_nbt})
+
+    bpe     = max(1, math.ceil(math.log2(len(palette_list))))
+    idx_map = {b: i for i, b in enumerate(palette_list)}
+    flat    = np.array([idx_map[b] for b in biome_list], dtype=np.uint64)
+    data    = nbtlib.LongArray(_pack_indices_numpy(flat, bpe))
+    return nbtlib.Compound({"palette": palette_nbt, "data": data})
+
+
 def apply_heightmap_chunk(
     chunk_nbt:      nbtlib.Compound,
     surface_grid:   np.ndarray,     # (16,16) z×x int32
@@ -364,6 +384,7 @@ def apply_heightmap_chunk(
     floor_y:              int = WORLD_MIN_Y,
     dirt_top_replacement: bool = True,
     dirt_top_block:       str  = "minecraft:grass_block",
+    biome_grid=None,   # BiomeGrid | None
 ) -> None:
     """
     Replace block_states in every section of a chunk based on surface_grid.
@@ -400,12 +421,30 @@ def apply_heightmap_chunk(
         for name in palette_names
     ])
 
+    # Compute biome NBT once per chunk (shared across all sections)
+    biome_nbt = (
+        build_biome_nbt(biome_grid.get_section_biomes(chunk_cx, chunk_cz))
+        if biome_grid is not None else None
+    )
+
     for sec_y in range(MIN_SECTION_Y, MAX_SECTION_Y + 1):
         sec_base = sec_y * 16
         sec_top  = sec_base + 15
-        if sec_top < floor_y:        # entire section below floor → all air
-            continue
-        if sec_base > fill_max:      # entire section above terrain → all air
+        if sec_top < floor_y or sec_base > fill_max:  # outside terrain range → air
+            if biome_nbt is not None:
+                if sec_y in sec_map:
+                    sections[sec_map[sec_y]]["biomes"] = biome_nbt
+                else:
+                    sections.append(nbtlib.Compound({
+                        "Y":           nbtlib.Byte(sec_y),
+                        "block_states": nbtlib.Compound({
+                            "palette": nbtlib.List[nbtlib.Compound]([
+                                nbtlib.Compound({"Name": nbtlib.String("minecraft:air")})
+                            ])
+                        }),
+                        "biomes": biome_nbt,
+                    }))
+                    sec_map = {int(s["Y"]): i for i, s in enumerate(sections)}
             continue
 
         indices = _compute_section_indices(
@@ -423,9 +462,17 @@ def apply_heightmap_chunk(
                 sec_map = {int(s["Y"]): i for i, s in enumerate(sections)}
             continue
 
+        # Determine default biomes NBT for new sections
+        default_biome_nbt = biome_nbt if biome_nbt is not None else nbtlib.Compound({
+            "palette": nbtlib.List[nbtlib.String]([nbtlib.String("minecraft:plains")])
+        })
+
         # Get or create section compound
         if sec_y in sec_map:
             sec = sections[sec_map[sec_y]]
+            # Update biomes on existing sections too
+            if biome_nbt is not None:
+                sec["biomes"] = biome_nbt
         else:
             sec = nbtlib.Compound({
                 "Y": nbtlib.Byte(sec_y),
@@ -434,11 +481,7 @@ def apply_heightmap_chunk(
                         nbtlib.Compound({"Name": nbtlib.String("minecraft:air")})
                     ])
                 }),
-                "biomes": nbtlib.Compound({
-                    "palette": nbtlib.List[nbtlib.String]([
-                        nbtlib.String("minecraft:plains")
-                    ])
-                }),
+                "biomes": default_biome_nbt,
             })
             sections.append(sec)
             sec_map = {int(s["Y"]): i for i, s in enumerate(sections)}

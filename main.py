@@ -238,6 +238,8 @@ def main():
     t_preview = 0.0
     t_apply   = 0.0
 
+    biome_config = _CFG.get("biome_grid", None)
+
     # ── Step 1: Preview ──────────────────────────────────────────────────
     if not args.no_preview:
         preview_path = str(Path(args.output) / "preview.png")
@@ -259,6 +261,40 @@ def main():
             open_after  = not args.no_open,
         )
         t_preview = time.perf_counter() - _t0
+
+        # ── Biome editor ──────────────────────────────────────────────────
+        if biome_config and biome_config.get("enabled", True) and not args.preview_only:
+            from heightmap_importer.biome_editor import show_biome_editor
+            import math as _math
+            _rs = args.region_size
+            _total_x = _rs[0] * 512
+            _total_z = _rs[1] * 512
+            _cell_size = biome_config.get("cell_size", 128)
+            _cols = _math.ceil(_total_x / _cell_size)
+            _rows = _math.ceil(_total_z / _cell_size)
+            if verbose:
+                print(f"\n  開啟生態域編輯器（{_cols}×{_rows} 格子）...")
+            updated_grid = show_biome_editor(
+                heightmap_path = str(image_path),
+                total_x        = _total_x,
+                total_z        = _total_z,
+                cell_size      = _cell_size,
+                initial_grid   = biome_config.get("grid", None),
+                origin_x       = args.x,
+                origin_z       = args.z,
+                min_y          = args.min_y,
+                max_y          = args.max_y,
+                sea_level      = args.sea_level,
+                snow_line      = args.snow_line,
+            )
+            if updated_grid is not None:
+                biome_config = dict(biome_config)
+                biome_config["grid"] = updated_grid
+                if verbose:
+                    print("  生態域設定已更新。")
+            else:
+                if verbose:
+                    print("  生態域編輯器取消，沿用原始設定。")
 
         if args.preview_only:
             if verbose:
@@ -319,6 +355,7 @@ def main():
             thermal_erosion     = not args.no_thermal_erosion,
             thermal_iterations  = args.thermal_iterations,
             thermal_talus       = args.thermal_talus,
+            biome_config        = biome_config,
         )
         t_apply = time.perf_counter() - _t0
     except KeyboardInterrupt:
@@ -371,6 +408,15 @@ def _print_banner(args, image_path):
           + (f"（雨滴 {args.hydraulic_droplets}）" if not args.no_hydraulic_erosion else ""))
     print(f"  熱侵蝕    : {'開啟' if not args.no_thermal_erosion else '關閉'}"
           + (f"（迭代 {args.thermal_iterations}，talus {args.thermal_talus}）" if not args.no_thermal_erosion else ""))
+    _bg = _CFG.get("biome_grid", None)
+    if _bg and _bg.get("enabled", True):
+        _grid = _bg.get("grid", None)
+        _rows = len(_grid) if _grid else "?"
+        _cols = len(_grid[0]) if _grid else "?"
+        _blend = f"，混合半徑 {_bg.get('blend_radius', 8)} 格" if _bg.get("blend_enabled", False) else ""
+        print(f"  生態域網格: 開啟（格子大小 {_bg.get('cell_size', 128)} 格，{_rows}×{_cols} 格子{_blend}）")
+    else:
+        print(f"  生態域網格: 關閉（全部 minecraft:plains）")
     print("-" * 64)
 
 
