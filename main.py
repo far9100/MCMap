@@ -239,6 +239,11 @@ def main():
     t_apply   = 0.0
 
     biome_config = _CFG.get("biome_grid", None)
+    # Load per-biome surface layer overrides from config (strip comment keys)
+    biome_surface_layers: dict = {
+        k: v for k, v in _CFG.get("biome_surface_layers", {}).items()
+        if not k.startswith("_")
+    }
 
     # ── Step 1: Preview ──────────────────────────────────────────────────
     if not args.no_preview:
@@ -286,12 +291,41 @@ def main():
                 max_y          = args.max_y,
                 sea_level      = args.sea_level,
                 snow_line      = args.snow_line,
+                region_size    = _rs,
             )
             if updated_grid is not None:
                 biome_config = dict(biome_config)
                 biome_config["grid"] = updated_grid
                 if verbose:
                     print("  生態域設定已更新。")
+
+                # ── Surface layer editor (per-biome) ──────────────────────
+                from heightmap_importer.biome_surface_editor import show_biome_surface_editor
+                _unique_biomes = sorted({
+                    b for row in updated_grid for b in row
+                })
+                _existing_bsl = _CFG.get("biome_surface_layers", {})
+                # Remove the comment key before passing to editor
+                _existing_bsl = {k: v for k, v in _existing_bsl.items()
+                                  if not k.startswith("_")}
+                _surface_layers_cfg = _CFG.get("surface_layers", None)
+                if verbose:
+                    print(f"\n  開啟表面方塊層編輯器（{len(_unique_biomes)} 個生態域）...")
+                updated_bsl = show_biome_surface_editor(
+                    selected_biomes      = _unique_biomes,
+                    default_layers       = _surface_layers_cfg,
+                    biome_surface_layers = _existing_bsl,
+                    min_y                = args.min_y,
+                    max_y                = args.max_y,
+                )
+                if updated_bsl is not None:
+                    biome_surface_layers = updated_bsl
+                    if verbose:
+                        custom_count = len(biome_surface_layers)
+                        print(f"  表面方塊層設定已更新（{custom_count} 個生態域已自訂）。")
+                else:
+                    if verbose:
+                        print("  表面方塊層編輯器取消，沿用設定檔設定。")
             else:
                 if verbose:
                     print("  生態域編輯器取消，沿用原始設定。")
@@ -355,7 +389,8 @@ def main():
             thermal_erosion     = not args.no_thermal_erosion,
             thermal_iterations  = args.thermal_iterations,
             thermal_talus       = args.thermal_talus,
-            biome_config        = biome_config,
+            biome_config          = biome_config,
+            biome_surface_layers  = biome_surface_layers,
         )
         t_apply = time.perf_counter() - _t0
     except KeyboardInterrupt:

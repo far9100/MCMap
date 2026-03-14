@@ -1,10 +1,10 @@
 {
-  "min_y": 0,
-  "max_y": 255,
+  "min_y": -63,
+  "max_y": 319,
   "sea_level": 0,
   "snow_line": 192,
   "region_origin": [0, 0],
-  "region_size": [1, 1],
+  "region_size": [2, 2],
   "terrain_smoothing": true,
   "smooth_sigma": 2.0,
   "smooth_passes": 3,

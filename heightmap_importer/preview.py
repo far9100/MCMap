@@ -19,50 +19,78 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from . import color_config as _cc
+
 
 def _build_color_anchors(
     sea_level: int, snow_line: int
 ) -> list[tuple[float, tuple[float, float, float]]]:
     """
-    Build colour anchors (Y-offset relative to sea_level) driven by
-    sea_level and snow_line so colours always match the config values.
+    Build colour anchors for a green→red heatmap.
+    Parameters are loaded from terrain_colors.json (falls back to built-in
+    defaults when the file is absent).
 
-    Rock zone spans from midpoint of (sea_level, snow_line) to snow_line.
+    sea_level / snow_line are accepted for API compatibility but unused.
     """
-    mid = (snow_line - sea_level) // 2          # midpoint of land zone
-    rock_start = sea_level + max(mid - 10, 5)   # start of rocky transition
-    return [
-        (sea_level - 100, (0.08, 0.15, 0.45)),  # 深海
-        (sea_level -   5, (0.15, 0.35, 0.65)),  # 淺海
-        (sea_level,       (0.20, 0.45, 0.70)),  # 海平面
-        (sea_level +   4, (0.82, 0.78, 0.58)),  # 沙灘
-        (sea_level +  12, (0.42, 0.68, 0.25)),  # 草地
-        (rock_start,      (0.20, 0.48, 0.14)),  # 森林
-        (snow_line -  15, (0.55, 0.52, 0.46)),  # 碎石坡
-        (snow_line,       (0.94, 0.95, 0.97)),  # 雪線（白）
+    cfg        = _cc.load()
+    hm         = cfg["heatmap"]
+    wb         = cfg["world_bounds"]
+
+    _GREEN     = tuple(hm["green"])
+    _RED       = tuple(hm["red"])
+    world_min  = wb["min_y"]
+    world_max  = wb["max_y"]
+    green_top  = hm["green_zone_top_y"]
+    red_bot    = hm["red_zone_bot_y"]
+    step       = hm["anchor_step_blocks"]
+
+    anchors: list[tuple[int, tuple[float, float, float]]] = [
+        (world_min, _GREEN),   # 最低點：純綠
+        (green_top, _GREEN),   # 純綠區頂端（漸層起點）
     ]
+
+    grad_range = red_bot - green_top
+    y = green_top + step
+    while y < red_bot:
+        t = (y - green_top) / grad_range
+        r = min(1.0, 2.0 * t)
+        g = min(1.0, 2.0 * (1.0 - t))
+        anchors.append((y, (r, g, 0.0)))
+        y += step
+
+    anchors.append((red_bot,   _RED))   # 純紅區起點
+    anchors.append((world_max, _RED))   # 最高點
+
+    return anchors
 
 
 def _height_to_colors(
     heights: np.ndarray, sea_level: int, snow_line: int
 ) -> np.ndarray:
     """
-    Vectorised height→RGB mapping driven by sea_level and snow_line.
+    Vectorised height→RGB mapping.
 
-    Parameters
-    ----------
-    heights   : np.ndarray  shape (H, W), absolute MC Y values
-    sea_level : int
-    snow_line : int
+    Mode is read from terrain_colors.json:
+      'stepped'  – discrete colour bands (sharp boundaries)
+      'gradient' – smooth linear interpolation between anchors
 
-    Returns
-    -------
-    np.ndarray  shape (H, W, 3), float32, values in [0, 1]
+    Returns np.ndarray shape (H, W, 3), float32, values in [0, 1].
     """
+    cfg  = _cc.load()
+    mode = cfg.get("mode", "stepped")
+
+    if mode == "stepped":
+        bands = sorted(cfg["color_bands"], key=lambda b: b["min_y"])
+        out   = np.full((*heights.shape, 3), _cc.to_rgb_float(bands[0]["color"]), dtype=np.float32)
+        for band in bands[1:]:
+            mask = heights >= band["min_y"]
+            if np.any(mask):
+                out[mask] = np.array(_cc.to_rgb_float(band["color"]), dtype=np.float32)
+        return np.clip(out, 0.0, 1.0)
+
+    # ── gradient mode ──────────────────────────────────────────────────────
     anchors = _build_color_anchors(sea_level, snow_line)
     out     = np.zeros((*heights.shape, 3), dtype=np.float32)
-
-    # Below lowest anchor → first colour
     out[:, :] = anchors[0][1]
 
     for i in range(len(anchors) - 1):
@@ -78,9 +106,7 @@ def _height_to_colors(
         for ch in range(3):
             out[mask, ch] = c0[ch] + (c1[ch] - c0[ch]) * t
 
-    # Above highest anchor → last colour (snow)
     out[heights >= anchors[-1][0]] = anchors[-1][1]
-
     return np.clip(out, 0.0, 1.0)
 
 
@@ -198,21 +224,39 @@ def render_preview(
     def _norm(y: float) -> float:
         return max(0.0, min(1.0, (y - min_y) / h_range))
 
-    # Build colormap from the same anchors used in _height_to_colors,
-    # but mapped to normalised [0,1] positions. Always force 0.0 and 1.0.
-    raw_anchors = _build_color_anchors(sea_level, snow_line)
-    cmap_anchors = [(0.0, raw_anchors[0][1])]   # force start = 0
-    for y_val, col in raw_anchors:
-        pos = _norm(y_val)
-        if pos > cmap_anchors[-1][0]:
-            cmap_anchors.append((pos, col))
-    if cmap_anchors[-1][0] < 1.0:
-        cmap_anchors.append((1.0, raw_anchors[-1][1]))  # force end = 1
+    _cfg  = _cc.load()
+    _mode = _cfg.get("mode", "stepped")
 
-    terrain_cmap = LinearSegmentedColormap.from_list(
-        "terrain_mc",
-        [(p, c) for p, c in cmap_anchors]
-    )
+    if _mode == "stepped":
+        # Build a stepped colormap: duplicate each colour at band boundary
+        # with an epsilon offset so transitions are sharp, not blended.
+        _bands     = sorted(_cfg["color_bands"], key=lambda b: b["min_y"])
+        _eps       = 1e-5
+        _cmap_pts  = [(0.0, tuple(_bands[0]["color"]))]
+        for _i, _band in enumerate(_bands):
+            _pos = _norm(_band["min_y"])
+            _col = tuple(_cc.to_rgb_float(_band["color"]))
+            if _pos > _cmap_pts[-1][0] + _eps:
+                _cmap_pts.append((_pos - _eps, _cmap_pts[-1][1]))
+            if _pos > _cmap_pts[-1][0]:
+                _cmap_pts.append((_pos, _col))
+            else:
+                _cmap_pts[-1] = (_cmap_pts[-1][0], _col)
+        if _cmap_pts[-1][0] < 1.0:
+            _cmap_pts.append((1.0, _cmap_pts[-1][1]))
+        terrain_cmap = LinearSegmentedColormap.from_list("terrain_mc", _cmap_pts)
+    else:
+        raw_anchors  = _build_color_anchors(sea_level, snow_line)
+        cmap_anchors = [(0.0, raw_anchors[0][1])]
+        for y_val, col in raw_anchors:
+            pos = _norm(y_val)
+            if pos > cmap_anchors[-1][0]:
+                cmap_anchors.append((pos, col))
+        if cmap_anchors[-1][0] < 1.0:
+            cmap_anchors.append((1.0, raw_anchors[-1][1]))
+        terrain_cmap = LinearSegmentedColormap.from_list(
+            "terrain_mc", [(p, c) for p, c in cmap_anchors]
+        )
 
     # --- Figure ---
     fig = plt.figure(figsize=(16, 7))

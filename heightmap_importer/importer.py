@@ -61,19 +61,41 @@ def import_heightmap(
     thermal_iterations: int   = 50,
     thermal_talus:      float = 0.05,
     biome_config:       dict  = None,
+    biome_surface_layers: dict = None,  # {biome_id: [layer_dicts]}
 ) -> None:
     """
     Apply a grayscale heightmap to a Minecraft 1.21.1 world.
+
+    biome_surface_layers: optional per-biome surface layer overrides.
+    Each chunk uses the dominant biome's layers; biomes without an entry
+    fall back to the global surface_layers.
     """
-    if surface_layers is None:
-        surface_layers = DEFAULT_SURFACE_LAYERS
+    if biome_surface_layers is None:
+        biome_surface_layers = {}
 
-    # Work on a shallow copy so we can annotate palette_idx without
-    # mutating the caller's list.
-    layers = copy.deepcopy(surface_layers)
+    # If biome_surface_layers provides a _default, use it as the effective
+    # fallback; otherwise fall back to surface_layers or the built-in default.
+    effective_default = (
+        biome_surface_layers.get("_default") or surface_layers or DEFAULT_SURFACE_LAYERS
+    )
 
-    # Build palette and annotate each layer with its palette index.
-    palette_names, _ = build_palette(layers)
+    # Work on deep copies so we can annotate palette_idx without
+    # mutating the caller's lists.
+    layers = copy.deepcopy(effective_default)
+
+    # Deep-copy per-biome layers, excluding _default (handled above)
+    biome_layers_copy: dict[str, list[dict]] = {
+        biome: copy.deepcopy(blayers)
+        for biome, blayers in biome_surface_layers.items()
+        if biome != "_default"
+    }
+
+    # Build a master palette covering ALL blocks (default + per-biome).
+    # build_palette annotates every layer dict with 'palette_idx' in-place.
+    all_layers_for_palette = list(layers)
+    for blayers in biome_layers_copy.values():
+        all_layers_for_palette.extend(blayers)
+    palette_names, _ = build_palette(all_layers_for_palette)
 
     # ------------------------------------------------------------------
     # 1. Copy world to output directory
@@ -190,6 +212,7 @@ def import_heightmap(
                 dirt_top_replacement=dirt_top_replacement,
                 dirt_top_block=dirt_top_block,
                 biome_grid=biome_grid,
+                biome_surface_layers_map=biome_layers_copy if biome_layers_copy else None,
             )
             update_heightmaps(chunk_nbt, surface_grid)
             region.write_chunk_nbt(cx_local, cz_local, chunk_nbt)

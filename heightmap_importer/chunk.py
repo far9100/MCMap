@@ -384,12 +384,17 @@ def apply_heightmap_chunk(
     floor_y:              int = WORLD_MIN_Y,
     dirt_top_replacement: bool = True,
     dirt_top_block:       str  = "minecraft:grass_block",
-    biome_grid=None,   # BiomeGrid | None
+    biome_grid=None,                    # BiomeGrid | None
+    biome_surface_layers_map: "dict | None" = None,  # {biome_id: layers}
 ) -> None:
     """
     Replace block_states in every section of a chunk based on surface_grid.
 
     Sections that are entirely air are removed to keep file size lean.
+
+    biome_surface_layers_map: optional per-biome layer overrides.  When
+    provided, the dominant biome of this chunk is looked up and its layers
+    are used instead of the global surface_layers (if an entry exists).
     """
     sections: nbtlib.List = chunk_nbt.get("sections", nbtlib.List[nbtlib.Compound]())
     if "sections" not in chunk_nbt:
@@ -400,7 +405,16 @@ def apply_heightmap_chunk(
     surf_max = int(surface_grid.max())
     fill_max = max(surf_max, water_level - 1)    # water can raise effective ceiling
 
-    surface_block_grid = _select_surface_blocks(surface_grid, surface_layers, chunk_cx, chunk_cz)
+    # Select per-biome layers when a map and biome grid are available
+    chunk_layers = surface_layers
+    if biome_surface_layers_map and biome_grid is not None:
+        from collections import Counter
+        section_biomes = biome_grid.get_section_biomes(chunk_cx, chunk_cz)
+        dominant_biome = Counter(section_biomes).most_common(1)[0][0]
+        if dominant_biome in biome_surface_layers_map:
+            chunk_layers = biome_surface_layers_map[dominant_biome]
+
+    surface_block_grid = _select_surface_blocks(surface_grid, chunk_layers, chunk_cx, chunk_cz)
 
     # Build the top-layer block grid (depth=0 only).
     # When dirt_top_replacement is enabled, columns whose surface block is dirt

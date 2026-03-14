@@ -14,71 +14,20 @@ import tkinter as tk
 import numpy as np
 from PIL import Image, ImageTk
 
+from . import color_config as _cc
+
 # ---------------------------------------------------------------------------
-# Biome colour palette
+# Biome colour palette  (loaded from terrain_colors.json at runtime)
 # ---------------------------------------------------------------------------
 
-BIOME_COLORS: dict[str, str] = {
-    "minecraft:plains":                   "#7CCC6C",
-    "minecraft:forest":                   "#3A7D44",
-    "minecraft:birch_forest":             "#55BB55",
-    "minecraft:dark_forest":              "#205830",
-    "minecraft:taiga":                    "#2D6E7E",
-    "minecraft:snowy_taiga":              "#3A8A9E",
-    "minecraft:snowy_plains":             "#CCE8F4",
-    "minecraft:desert":                   "#D9C07A",
-    "minecraft:savanna":                  "#C8B454",
-    "minecraft:savanna_plateau":          "#B8A040",
-    "minecraft:jungle":                   "#1E8C45",
-    "minecraft:sparse_jungle":            "#4CAF50",
-    "minecraft:bamboo_jungle":            "#2E9E50",
-    "minecraft:swamp":                    "#4D6B3C",
-    "minecraft:mangrove_swamp":           "#3A5E35",
-    "minecraft:badlands":                 "#C0603A",
-    "minecraft:eroded_badlands":          "#D0704A",
-    "minecraft:wooded_badlands":          "#A0502A",
-    "minecraft:ocean":                    "#3D6FA6",
-    "minecraft:deep_ocean":               "#1A3D6B",
-    "minecraft:frozen_ocean":             "#A0C8E0",
-    "minecraft:deep_frozen_ocean":        "#8090A0",
-    "minecraft:cold_ocean":               "#2A5A8A",
-    "minecraft:lukewarm_ocean":           "#4A90C0",
-    "minecraft:warm_ocean":               "#5AAAD0",
-    "minecraft:beach":                    "#D4C07A",
-    "minecraft:snowy_beach":              "#E0E8F0",
-    "minecraft:stony_shore":              "#909090",
-    "minecraft:windswept_hills":          "#8A8A8A",
-    "minecraft:windswept_gravelly_hills": "#7A7A7A",
-    "minecraft:windswept_forest":         "#6A8A6A",
-    "minecraft:windswept_savanna":        "#C0AA44",
-    "minecraft:meadow":                   "#AAD56C",
-    "minecraft:frozen_river":             "#A0D0E8",
-    "minecraft:river":                    "#5088C0",
-    "minecraft:mushroom_fields":          "#CC88BB",
-    "minecraft:ice_spikes":               "#B8D8F0",
-    "minecraft:cherry_grove":             "#F4A0C0",
-    "minecraft:grove":                    "#6090A0",
-    "minecraft:snowy_slopes":             "#D0E0F0",
-    "minecraft:jagged_peaks":             "#C8C8C8",
-    "minecraft:frozen_peaks":             "#D0E8F8",
-    "minecraft:stony_peaks":              "#A0A0A0",
-    "minecraft:lush_caves":               "#44BB44",
-    "minecraft:dripstone_caves":          "#A09060",
-    "minecraft:deep_dark":                "#202830",
-    "minecraft:nether_wastes":            "#CC3300",
-    "minecraft:soul_sand_valley":         "#7A6050",
-    "minecraft:crimson_forest":           "#CC2244",
-    "minecraft:warped_forest":            "#22AAAA",
-    "minecraft:basalt_deltas":            "#605050",
-    "minecraft:the_end":                  "#DDDDAA",
-    "minecraft:small_end_islands":        "#CCCC99",
-    "minecraft:end_midlands":             "#CCCC88",
-    "minecraft:end_highlands":            "#CCCC77",
-    "minecraft:end_barrens":              "#BBBB66",
-    "minecraft:the_void":                 "#111111",
-}
+def _get_biome_colors() -> tuple[dict[str, str], str]:
+    """Return (biome_id -> hex_color, fallback_hex) from config."""
+    cfg = _cc.load()
+    return cfg.get("biome_colors", {}), cfg.get("biome_fallback_color", "#888888")
 
-_FALLBACK_COLOR = "#888888"
+# Module-level reference kept for UI elements that still reference BIOME_COLORS
+# by name; refreshed on each editor open via _get_biome_colors().
+BIOME_COLORS, _FALLBACK_COLOR = _get_biome_colors()
 
 
 def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
@@ -93,19 +42,41 @@ def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
 def _build_terrain_anchors(
     sea_level: int, snow_line: int
 ) -> list[tuple[float, tuple[float, float, float]]]:
-    """Exact replica of preview.py _build_color_anchors (Y → RGB in [0,1])."""
-    mid        = (snow_line - sea_level) // 2
-    rock_start = sea_level + max(mid - 10, 5)
-    return [
-        (sea_level - 100, (0.08, 0.15, 0.45)),   # 深海
-        (sea_level -   5, (0.15, 0.35, 0.65)),   # 淺海
-        (sea_level,       (0.20, 0.45, 0.70)),   # 海平面
-        (sea_level +   4, (0.82, 0.78, 0.58)),   # 沙灘
-        (sea_level +  12, (0.42, 0.68, 0.25)),   # 草地
-        (rock_start,      (0.20, 0.48, 0.14)),   # 森林
-        (snow_line -  15, (0.55, 0.52, 0.46)),   # 碎石坡
-        (snow_line,       (0.94, 0.95, 0.97)),   # 雪線
+    """
+    Green→red heatmap anchors (mirrors preview.py _build_color_anchors).
+    Parameters loaded from terrain_colors.json.
+    sea_level / snow_line are accepted for API compatibility but unused.
+    """
+    cfg       = _cc.load()
+    hm        = cfg["heatmap"]
+    wb        = cfg["world_bounds"]
+
+    _GREEN    = tuple(hm["green"])
+    _RED      = tuple(hm["red"])
+    world_min = wb["min_y"]
+    world_max = wb["max_y"]
+    green_top = hm["green_zone_top_y"]
+    red_bot   = hm["red_zone_bot_y"]
+    step      = hm["anchor_step_blocks"]
+
+    anchors: list[tuple[int, tuple[float, float, float]]] = [
+        (world_min, _GREEN),
+        (green_top, _GREEN),
     ]
+
+    grad_range = red_bot - green_top
+    y = green_top + step
+    while y < red_bot:
+        t = (y - green_top) / grad_range
+        r = min(1.0, 2.0 * t)
+        g = min(1.0, 2.0 * (1.0 - t))
+        anchors.append((y, (r, g, 0.0)))
+        y += step
+
+    anchors.append((red_bot,   _RED))
+    anchors.append((world_max, _RED))
+
+    return anchors
 
 
 def _generate_terrain_image(
@@ -118,8 +89,8 @@ def _generate_terrain_image(
     max_y: int,
 ) -> np.ndarray:
     """
-    Return (H, W, 3) float32 in [0, 255] matching preview.py appearance:
-    same colour anchors (absolute MC Y) + numpy hillshading.
+    Return ((H, W, 3) float32 in [0, 255], (H, W) float32 MC Y values).
+Same colour scheme as preview.py + numpy hillshading.
     """
     with Image.open(heightmap_path) as hm:
         gray = hm.convert("L").resize((canvas_w, canvas_h), Image.LANCZOS)
@@ -127,24 +98,34 @@ def _generate_terrain_image(
     # Pixel value → absolute MC Y
     h_mc = (np.asarray(gray, dtype=np.float32) / 255.0) * (max_y - min_y) + min_y
 
-    # ── Colour from anchors ───────────────────────────────────────────────
-    anchors = _build_terrain_anchors(sea_level, snow_line)
+    # ── Colour from config (stepped or gradient) ──────────────────────────
+    cfg  = _cc.load()
+    mode = cfg.get("mode", "stepped")
+
     rgb = np.zeros((canvas_h, canvas_w, 3), dtype=np.float32)
-    rgb[:] = anchors[0][1]   # fill with below-minimum colour
 
-    for i in range(len(anchors) - 1):
-        y0, c0 = anchors[i]
-        y1, c1 = anchors[i + 1]
-        if y1 <= y0:
-            continue
-        mask = (h_mc >= y0) & (h_mc < y1)
-        if not mask.any():
-            continue
-        t = ((h_mc[mask] - y0) / (y1 - y0)).reshape(-1, 1)
-        rgb[mask] = np.array(c0, dtype=np.float32) * (1 - t) + \
-                    np.array(c1, dtype=np.float32) * t
-
-    rgb[h_mc >= anchors[-1][0]] = anchors[-1][1]
+    if mode == "stepped":
+        bands = sorted(cfg["color_bands"], key=lambda b: b["min_y"])
+        rgb[:] = _cc.to_rgb_float(bands[0]["color"])
+        for band in bands[1:]:
+            mask = h_mc >= band["min_y"]
+            if mask.any():
+                rgb[mask] = np.array(_cc.to_rgb_float(band["color"]), dtype=np.float32)
+    else:
+        anchors = _build_terrain_anchors(sea_level, snow_line)
+        rgb[:] = anchors[0][1]
+        for i in range(len(anchors) - 1):
+            y0, c0 = anchors[i]
+            y1, c1 = anchors[i + 1]
+            if y1 <= y0:
+                continue
+            mask = (h_mc >= y0) & (h_mc < y1)
+            if not mask.any():
+                continue
+            t = ((h_mc[mask] - y0) / (y1 - y0)).reshape(-1, 1)
+            rgb[mask] = np.array(c0, dtype=np.float32) * (1 - t) + \
+                        np.array(c1, dtype=np.float32) * t
+        rgb[h_mc >= anchors[-1][0]] = anchors[-1][1]
 
     # ── Hillshading (mirrors LightSource azdeg=315, altdeg=45, soft) ────
     h_norm = (h_mc - h_mc.min()) / max(float(h_mc.max() - h_mc.min()), 1e-6)
@@ -172,7 +153,31 @@ def _generate_terrain_image(
         2.0 * c * (1.0 - I) + np.sqrt(c.clip(1e-8)) * (2.0 * I - 1.0),
     )
 
-    return (shaded.clip(0.0, 1.0) * 255.0).astype(np.float32)
+    return (shaded.clip(0.0, 1.0) * 255.0).astype(np.float32), h_mc
+
+
+# ---------------------------------------------------------------------------
+# Contour overlay helper
+# ---------------------------------------------------------------------------
+
+def _draw_contours(
+    composite: np.ndarray,
+    h_mc:      np.ndarray,
+    threshold: float,
+    color:     tuple[int, int, int],
+) -> None:
+    """
+    Draw a 1-pixel contour line on *composite* (in-place) where h_mc crosses
+    *threshold*.  Works by marking pixels where adjacent values straddle the
+    threshold horizontally or vertically.
+    """
+    above = h_mc >= threshold
+    # Horizontal edge: mark the pixel whose right neighbour crosses the boundary
+    h_edge = above[:, :-1] != above[:, 1:]
+    composite[:, :-1][h_edge] = color
+    # Vertical edge
+    v_edge = above[:-1, :] != above[1:, :]
+    composite[:-1, :][v_edge] = color
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +233,7 @@ def show_biome_editor(
     max_y:          int,
     sea_level:      int,
     snow_line:      int = 192,
+    region_size:    "list[int] | None" = None,
 ) -> "list[list[str]] | None":
     """
     Display the interactive biome grid editor.
@@ -238,12 +244,32 @@ def show_biome_editor(
 
     Returns updated grid on confirm, None on cancel / close.
     """
+    # Region size
+    _region_size = region_size if region_size else [1, 1]
+    region_nx, region_nz = _region_size[0], _region_size[1]
+
     # Grid dimensions (in biome cells)
     cols = math.ceil(total_x / max(1, cell_size))
     rows = math.ceil(total_z / max(1, cell_size))
 
     # How many grid cells fit in one 16-block chunk
     cells_per_chunk = max(1, _CHUNK_BLOCKS // cell_size)
+
+    # How many grid cells fit in one 512-block region
+    cells_per_region_x = math.ceil(512 / max(1, cell_size))
+    cells_per_region_z = math.ceil(512 / max(1, cell_size))
+
+    # Current region being viewed
+    current_region = [0, 0]  # [rx_idx, rz_idx]
+
+    def _get_view_range():
+        """Return (c0, r0, view_cols, view_rows) for current_region."""
+        rx, rz = current_region
+        c0 = rx * cells_per_region_x
+        r0 = rz * cells_per_region_z
+        c1 = min(c0 + cells_per_region_x, cols)
+        r1 = min(r0 + cells_per_region_z, rows)
+        return c0, r0, max(1, c1 - c0), max(1, r1 - r0)
 
     result: "list[list[str]] | None" = None
 
@@ -284,13 +310,14 @@ def show_biome_editor(
     cell_h = canvas_h / max(1, rows)
     show_grid_lines = cell_w >= 6 and cell_h >= 6
 
-    # ── Colour palette ───────────────────────────────────────────────────────
-    all_biomes    = sorted(BIOME_COLORS.keys())
+    # ── Colour palette (reload from config on each open) ───────────────────
+    _live_biome_colors, _live_fallback = _get_biome_colors()
+    all_biomes    = sorted(_live_biome_colors.keys())
     biome_to_idx  = {b: i for i, b in enumerate(all_biomes)}
     fallback_idx  = len(all_biomes)
     color_palette = np.array(
-        [_hex_to_rgb(BIOME_COLORS[b]) for b in all_biomes]
-        + [_hex_to_rgb(_FALLBACK_COLOR)],
+        [_hex_to_rgb(_live_biome_colors[b]) for b in all_biomes]
+        + [_hex_to_rgb(_live_fallback)],
         dtype=np.uint8,
     )
 
@@ -313,11 +340,12 @@ def show_biome_editor(
 
     # ── Terrain background (float32) ─────────────────────────────────────────
     try:
-        bg_arr = _generate_terrain_image(
+        bg_arr, h_mc_canvas = _generate_terrain_image(
             heightmap_path, canvas_w, canvas_h, sea_level, snow_line, min_y, max_y
         )
     except Exception:
-        bg_arr = np.full((canvas_h, canvas_w, 3), [70, 100, 60], dtype=np.float32)
+        bg_arr        = np.full((canvas_h, canvas_w, 3), [70, 100, 60], dtype=np.float32)
+        h_mc_canvas   = np.full((canvas_h, canvas_w), (min_y + max_y) / 2.0, dtype=np.float32)
 
     # ── Main layout ──────────────────────────────────────────────────────────
     main_frame = tk.Frame(root, bg="#2B2B2B")
@@ -355,7 +383,7 @@ def show_biome_editor(
 
     current_label = tk.Label(
         right_frame, text="■ plains",
-        bg="#2B2B2B", fg=BIOME_COLORS.get("minecraft:plains", "#7CCC6C"),
+        bg="#2B2B2B", fg=_live_biome_colors.get("minecraft:plains", "#7CCC6C"),
         font=("Consolas", 9), relief=tk.GROOVE, anchor=tk.W, padx=6, pady=4,
     )
     current_label.pack(fill=tk.X, padx=4, pady=(0, 6))
@@ -434,6 +462,30 @@ def show_biome_editor(
     sub_photo_ref  = [None]   # keep PhotoImage alive
     sub_canvas_img = sub_canvas.create_image(0, 0, anchor=tk.NW, tags="sub_bg")
 
+
+    # ── Display options ───────────────────────────────────────────────
+    tk.Frame(right_frame, bg="#555555", height=1).pack(fill=tk.X, padx=4, pady=4)
+    tk.Label(right_frame, text="─ 顯示選項 ─",
+             bg="#2B2B2B", fg="#CCCCCC", font=("Consolas", 9, "bold")).pack(pady=(0, 2))
+
+    show_sea_level_var = tk.BooleanVar(value=True)
+    show_snow_line_var = tk.BooleanVar(value=True)
+
+    tk.Checkbutton(
+        right_frame, text=f"顯示海平面 (Y={sea_level})",
+        variable=show_sea_level_var,
+        bg="#2B2B2B", fg="#6699FF",
+        selectcolor="#1A1A1A", activebackground="#2B2B2B",
+        font=("Consolas", 8), command=lambda: _refresh_canvas(),
+    ).pack(anchor=tk.W, padx=4)
+
+    tk.Checkbutton(
+        right_frame, text=f"顯示雪線 (Y={snow_line})",
+        variable=show_snow_line_var,
+        bg="#2B2B2B", fg="#DDDDFF",
+        selectcolor="#1A1A1A", activebackground="#2B2B2B",
+        font=("Consolas", 8), command=lambda: _refresh_canvas(),
+    ).pack(anchor=tk.W, padx=4)
     # ── Confirm / Cancel buttons ─────────────────────────────────────────────
     tk.Frame(right_frame, bg="#555555", height=1).pack(fill=tk.X, padx=4, pady=4)
 
@@ -536,15 +588,89 @@ def show_biome_editor(
     canvas_img_id = canvas.create_image(0, 0, anchor=tk.NW, tags="composite")
 
     def _refresh_canvas() -> None:
-        arr = _render_composite(
-            bg_arr, grid_idx, color_palette,
-            canvas_w, canvas_h, cols, rows, show_grid_lines,
-        )
+        if region_nx == 1 and region_nz == 1:
+            arr = _render_composite(
+                bg_arr, grid_idx, color_palette,
+                canvas_w, canvas_h, cols, rows, show_grid_lines,
+            )
+            hmc_view = h_mc_canvas
+        else:
+            c0, r0, vc, vr = _get_view_range()
+            # Map grid cell range to bg_arr pixel range
+            px0 = int(c0 * canvas_w / cols)
+            px1 = int((c0 + vc) * canvas_w / cols)
+            py0 = int(r0 * canvas_h / rows)
+            py1 = int((r0 + vr) * canvas_h / rows)
+            px0, px1 = max(0, px0), min(canvas_w, max(px0 + 1, px1))
+            py0, py1 = max(0, py0), min(canvas_h, max(py0 + 1, py1))
+            # Crop and scale bg_arr to full canvas size
+            crop_bg = bg_arr[py0:py1, px0:px1].clip(0, 255).astype(np.uint8)
+            region_bg = np.asarray(
+                Image.fromarray(crop_bg, "RGB").resize((canvas_w, canvas_h), Image.NEAREST),
+                dtype=np.float32,
+            )
+            # Crop h_mc_canvas for contour overlays
+            hmc_crop = h_mc_canvas[py0:py1, px0:px1]
+            hmc_view = np.asarray(
+                Image.fromarray(hmc_crop).resize((canvas_w, canvas_h), Image.NEAREST)
+            )
+            sub_grid = grid_idx[r0:r0 + vr, c0:c0 + vc]
+            arr = _render_composite(
+                region_bg, sub_grid, color_palette,
+                canvas_w, canvas_h, vc, vr, show_grid_lines,
+            )
+        if show_sea_level_var.get():
+            _draw_contours(arr, hmc_view, sea_level, (64, 128, 255))
+        if show_snow_line_var.get():
+            _draw_contours(arr, hmc_view, snow_line, (220, 220, 255))
         img = Image.fromarray(arr, "RGB")
         photo_ref[0] = ImageTk.PhotoImage(img)
         canvas.itemconfig(canvas_img_id, image=photo_ref[0])
 
     _refresh_canvas()
+
+    # ── Mini-map region navigator ─────────────────────────────────────────────
+    if not (region_nx == 1 and region_nz == 1):
+        MINI_CELL_PX = 24
+        MINI_W = region_nx * MINI_CELL_PX
+        MINI_H = region_nz * MINI_CELL_PX
+
+        minimap = tk.Canvas(
+            canvas,
+            width=MINI_W, height=MINI_H,
+            bg="#222233", highlightthickness=1, highlightbackground="#AAAAAA",
+            cursor="hand2",
+        )
+        canvas.create_window(canvas_w - MINI_W - 4, 4, anchor=tk.NW, window=minimap)
+
+        def _draw_minimap() -> None:
+            minimap.delete("all")
+            rx_cur, rz_cur = current_region
+            for rz in range(region_nz):
+                for rx in range(region_nx):
+                    x0 = rx * MINI_CELL_PX
+                    y0 = rz * MINI_CELL_PX
+                    x1 = x0 + MINI_CELL_PX
+                    y1 = y0 + MINI_CELL_PX
+                    fill = "#4A6ABA" if (rx == rx_cur and rz == rz_cur) else "#334455"
+                    minimap.create_rectangle(x0, y0, x1, y1,
+                                             fill=fill, outline="#AAAAAA", width=1)
+                    minimap.create_text(
+                        (x0 + x1) // 2, (y0 + y1) // 2,
+                        text=f"{rx},{rz}", fill="white", font=("Consolas", 7),
+                    )
+
+        def _on_minimap_click(event) -> None:
+            rx = min(int(event.x / MINI_CELL_PX), region_nx - 1)
+            rz = min(int(event.y / MINI_CELL_PX), region_nz - 1)
+            current_region[0] = rx
+            current_region[1] = rz
+            _clear_highlight()
+            _draw_minimap()
+            _refresh_canvas()
+
+        minimap.bind("<Button-1>", _on_minimap_click)
+        _draw_minimap()
 
     # ── Sub-canvas helpers ────────────────────────────────────────────────────
     selected_chunk_pos = [None]  # (chunk_gx, chunk_gz) or None
@@ -612,10 +738,16 @@ def show_biome_editor(
     def _set_highlight(chunk_gx: int, chunk_gz: int) -> None:
         if highlight_id[0] is not None:
             canvas.delete(highlight_id[0])
-        x0 = chunk_gx * cells_per_chunk * cell_w
-        y0 = chunk_gz * cells_per_chunk * cell_h
-        x1 = x0 + cells_per_chunk * cell_w
-        y1 = y0 + cells_per_chunk * cell_h
+        c0, r0, vc, vr = _get_view_range()
+        # Convert global cell coords to canvas pixels in current view
+        local_gx0 = chunk_gx * cells_per_chunk - c0
+        local_gz0 = chunk_gz * cells_per_chunk - r0
+        local_gx1 = local_gx0 + cells_per_chunk
+        local_gz1 = local_gz0 + cells_per_chunk
+        x0 = local_gx0 * canvas_w / vc
+        y0 = local_gz0 * canvas_h / vr
+        x1 = local_gx1 * canvas_w / vc
+        y1 = local_gz1 * canvas_h / vr
         highlight_id[0] = canvas.create_rectangle(
             x0, y0, x1, y1,
             outline="#FFE040", width=2, fill="", tags="highlight",
@@ -639,7 +771,7 @@ def show_biome_editor(
 
     # ── Event handlers ────────────────────────────────────────────────────────
     def _update_current_label(biome: str) -> None:
-        color = BIOME_COLORS.get(biome, _FALLBACK_COLOR)
+        color = _live_biome_colors.get(biome, _live_fallback)
         display_color = color if color not in ("#000000", "#111111") else "#AAAAAA"
         current_label.config(
             text="■ " + biome.replace("minecraft:", ""),
@@ -660,8 +792,9 @@ def show_biome_editor(
 
     # Main canvas click/drag
     def _apply_click(x: float, y: float) -> None:
-        gx = max(0, min(int(x * cols / canvas_w), cols - 1))
-        gz = max(0, min(int(y * rows / canvas_h), rows - 1))
+        c0, r0, vc, vr = _get_view_range()
+        gx = c0 + max(0, min(int(x * vc / canvas_w), vc - 1))
+        gz = r0 + max(0, min(int(y * vr / canvas_h), vr - 1))
 
         if detail_enabled.get():
             # Select chunk; open sub-editor
