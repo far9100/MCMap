@@ -2,14 +2,12 @@
 Core import orchestrator for Minecraft Java Edition 1.21.1.
 
 Workflow:
-  1. Copy the source world to the output directory.
-  2. Read each affected chunk from the OUTPUT region files.
-  3. Apply heightmap terrain block-by-block.
-  4. Save modified region files back to the output directory.
+  1. (Optional) Read existing chunks from source world; otherwise generate blank chunks.
+  2. Apply heightmap terrain block-by-block.
+  3. Save modified region files to the output directory.
 """
 
 import copy
-import shutil
 from pathlib import Path
 
 import numpy as np
@@ -17,7 +15,7 @@ import nbtlib
 from tqdm import tqdm
 
 from .heightmap import HeightMap
-from .region import get_or_create_region
+from .region import get_or_create_region, get_region_src_dst
 from .chunk import apply_heightmap_chunk, update_heightmaps, build_palette, WORLD_MIN_Y, WORLD_MAX_Y
 from .biome import BiomeGrid
 
@@ -35,7 +33,7 @@ DEFAULT_SURFACE_LAYERS = [
 
 
 def import_heightmap(
-    world_dir:          str,
+    world_dir:          str | None,
     output_dir:         str,
     image_path:         str,
     origin_x:           int,
@@ -125,20 +123,13 @@ def import_heightmap(
             palette_names.append(sb_name)
 
     # ------------------------------------------------------------------
-    # 1. Copy world to output directory
+    # 1. Prepare paths
     # ------------------------------------------------------------------
-    src = Path(world_dir)
+    src = Path(world_dir) if world_dir else None
     dst = Path(output_dir)
 
     if verbose:
-        print(f"Copying world to output folder: {dst} ...")
-
-    if dst.exists():
-        shutil.rmtree(dst)
-    shutil.copytree(src, dst)
-
-    if verbose:
-        print("Copy complete.")
+        print(f"Output directory: {dst}")
 
     # ------------------------------------------------------------------
     # 2. Prepare
@@ -185,7 +176,10 @@ def import_heightmap(
     def get_region(cx: int, cz: int):
         key = (cx >> 5, cz >> 5)
         if key not in open_regions:
-            open_regions[key] = get_or_create_region(str(dst), cx, cz)
+            if src is None:
+                open_regions[key] = get_or_create_region(str(dst), cx, cz)
+            else:
+                open_regions[key] = get_region_src_dst(str(src), str(dst), cx, cz)
         return open_regions[key]
 
     # ------------------------------------------------------------------

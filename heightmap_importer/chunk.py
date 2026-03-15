@@ -485,11 +485,23 @@ def apply_heightmap_chunk(
         for name in palette_names
     ])
 
-    # Compute biome NBT once per chunk (shared across all sections)
-    biome_nbt = (
-        build_biome_nbt(biome_grid.get_section_biomes(chunk_cx, chunk_cz))
-        if biome_grid is not None else None
-    )
+    # Compute biome NBT once per chunk (shared across all sections).
+    # Plains is auto-promoted to ocean for any 4×4 biome cell whose centre
+    # column surface height is below water_level.
+    if biome_grid is not None:
+        raw_biomes = biome_grid.get_section_biomes(chunk_cx, chunk_cz)
+        biome_list: list[str] = []
+        for _by in range(4):
+            for _bz in range(4):
+                for _bx in range(4):
+                    biome = raw_biomes[_by * 16 + _bz * 4 + _bx]
+                    if biome == "minecraft:plains":
+                        if surface_grid[_bz * 4 + 2, _bx * 4 + 2] < water_level:
+                            biome = "minecraft:ocean"
+                    biome_list.append(biome)
+        biome_nbt = build_biome_nbt(biome_list)
+    else:
+        biome_nbt = None
 
     for sec_y in range(MIN_SECTION_Y, MAX_SECTION_Y + 1):
         sec_base = sec_y * 16

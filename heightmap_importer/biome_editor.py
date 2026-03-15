@@ -214,6 +214,135 @@ def _render_composite(
 
 
 # ---------------------------------------------------------------------------
+# Boundary smoothing
+# ---------------------------------------------------------------------------
+
+def _smooth_biome_boundaries(
+    grid: "list[list[str]]",
+    blur_sigma: float,
+    strength: float,
+) -> "list[list[str]]":
+    """
+    Smooth biome boundaries using corner-pattern fix + Gaussian-blur probability masks.
+
+    Parameters
+    ----------
+    grid       : 2D list of biome IDs
+    blur_sigma : Gaussian blur sigma (1.0=light, 2.0=medium, 3.5=strong)
+    strength   : noise strength 0.0–1.0 (deterministic jitter to break symmetry)
+
+    Returns
+    -------
+    New 2D list with smoothed boundaries; core (interior) cells are unchanged.
+    """
+    if not grid or not grid[0]:
+        return grid
+
+    rows = len(grid)
+    cols = len(grid[0])
+
+    # ── Step 1: Corner-pattern fix (L-shape removal) ─────────────────────────
+    work = [row[:] for row in grid]
+    for r in range(rows - 1):
+        for c in range(cols - 1):
+            tl = work[r][c]
+            tr = work[r][c + 1]
+            bl = work[r + 1][c]
+            br = work[r + 1][c + 1]
+            biomes_2x2 = [tl, tr, bl, br]
+            majority = max(set(biomes_2x2), key=biomes_2x2.count)
+            if biomes_2x2.count(majority) == 3:
+                h = (r * 2654435761 ^ c * 1234567891) & 0xFFFFFFFF
+                if (h >> 8) & 0xFF < 200:   # ~78 % chance to fix
+                    if tl != majority:
+                        work[r][c] = majority
+                    elif tr != majority:
+                        work[r][c + 1] = majority
+                    elif bl != majority:
+                        work[r + 1][c] = majority
+                    else:
+                        work[r + 1][c + 1] = majority
+
+    # ── Step 2: Gaussian-blur probability masks ───────────────────────────────
+    unique_biomes = list({b for row in work for b in row})
+    biome_idx_map = {b: i for i, b in enumerate(unique_biomes)}
+    n = len(unique_biomes)
+
+    int_grid = np.array(
+        [[biome_idx_map[work[r][c]] for c in range(cols)] for r in range(rows)],
+        dtype=np.int32,
+    )
+
+    # Binary masks (n, rows, cols)
+    masks = np.zeros((n, rows, cols), dtype=np.float32)
+    for i in range(n):
+        masks[i] = (int_grid == i).astype(np.float32)
+
+    # Blur — scipy if available, otherwise box-blur fallback
+    try:
+        from scipy.ndimage import gaussian_filter as _gf
+        blurred = np.stack([_gf(masks[i], sigma=blur_sigma) for i in range(n)])
+    except ImportError:
+        size = max(3, int(blur_sigma * 3) | 1)   # odd kernel size
+        pad  = size // 2
+        blurred = np.zeros_like(masks)
+        for i in range(n):
+            padded = np.pad(masks[i], pad, mode="edge")
+            for dr in range(size):
+                for dc in range(size):
+                    blurred[i] += padded[dr: dr + rows, dc: dc + cols]
+            blurred[i] /= size * size
+
+    # Deterministic hash noise to break boundary symmetry
+    rs = np.arange(rows, dtype=np.uint32).reshape(-1, 1)
+    cs = np.arange(cols, dtype=np.uint32).reshape(1, -1)
+    for i in range(n):
+        h = (
+            rs * np.uint32(2654435761)
+            ^ cs * np.uint32(1234567891)
+            ^ np.uint32(i * 374761393)
+        ) & np.uint32(0xFFFFFFFF)
+        blurred[i] += (h.astype(np.float32) / 0xFFFFFFFF - 0.5) * strength * 0.15
+
+    # ── Step 3: Identify boundary band ───────────────────────────────────────
+    is_boundary = np.zeros((rows, cols), dtype=bool)
+    is_boundary[:-1, :] |= int_grid[:-1, :] != int_grid[1:, :]
+    is_boundary[1:,  :] |= int_grid[:-1, :] != int_grid[1:, :]
+    is_boundary[:, :-1] |= int_grid[:, :-1] != int_grid[:, 1:]
+    is_boundary[:,  1:] |= int_grid[:, :-1] != int_grid[:, 1:]
+
+    band_width = max(1, int(blur_sigma * 2))
+    try:
+        from scipy.ndimage import distance_transform_edt as _dte
+        dist = _dte(~is_boundary)
+    except ImportError:
+        from collections import deque as _deque
+        dist = np.full((rows, cols), float(rows + cols), dtype=np.float32)
+        bq: "_deque[tuple[int,int]]" = _deque()
+        for r2, c2 in zip(*np.where(is_boundary)):
+            dist[r2, c2] = 0.0
+            bq.append((int(r2), int(c2)))
+        while bq:
+            r2, c2 = bq.popleft()
+            nd = dist[r2, c2] + 1
+            for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                nr, nc = r2 + dr, c2 + dc
+                if 0 <= nr < rows and 0 <= nc < cols and dist[nr, nc] > nd:
+                    dist[nr, nc] = nd
+                    bq.append((nr, nc))
+
+    in_band = dist <= band_width
+
+    # ── Step 4: Assign new values only inside the boundary band ──────────────
+    new_assignment = np.argmax(blurred, axis=0)
+    result = [row[:] for row in work]
+    for r2, c2 in zip(*np.where(in_band)):
+        result[int(r2)][int(c2)] = unique_biomes[new_assignment[r2, c2]]
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -321,23 +450,6 @@ def show_biome_editor(
         dtype=np.uint8,
     )
 
-    # ── Working grid ─────────────────────────────────────────────────────────
-    grid: list[list[str]] = []
-    for r in range(rows):
-        row: list[str] = []
-        for c in range(cols):
-            if initial_grid and r < len(initial_grid) and c < len(initial_grid[r]):
-                row.append(initial_grid[r][c])
-            else:
-                row.append("minecraft:plains")
-        grid.append(row)
-
-    grid_idx = np.array(
-        [biome_to_idx.get(grid[gz][gx], fallback_idx)
-         for gz in range(rows) for gx in range(cols)],
-        dtype=np.int16,
-    ).reshape(rows, cols)
-
     # ── Terrain background (float32) ─────────────────────────────────────────
     try:
         bg_arr, h_mc_canvas = _generate_terrain_image(
@@ -346,6 +458,26 @@ def show_biome_editor(
     except Exception:
         bg_arr        = np.full((canvas_h, canvas_w, 3), [70, 100, 60], dtype=np.float32)
         h_mc_canvas   = np.full((canvas_h, canvas_w), (min_y + max_y) / 2.0, dtype=np.float32)
+
+    # ── Working grid ─────────────────────────────────────────────────────────
+    grid: list[list[str]] = []
+    for r in range(rows):
+        row: list[str] = []
+        for c in range(cols):
+            if initial_grid and r < len(initial_grid) and c < len(initial_grid[r]):
+                row.append(initial_grid[r][c])
+            else:
+                # Auto-detect: use ocean biome for cells below sea level
+                py = max(0, min(int((r + 0.5) * canvas_h / rows), canvas_h - 1))
+                px = max(0, min(int((c + 0.5) * canvas_w / cols), canvas_w - 1))
+                row.append("minecraft:ocean" if h_mc_canvas[py, px] < sea_level else "minecraft:plains")
+        grid.append(row)
+
+    grid_idx = np.array(
+        [biome_to_idx.get(grid[gz][gx], fallback_idx)
+         for gz in range(rows) for gx in range(cols)],
+        dtype=np.int16,
+    ).reshape(rows, cols)
 
     # ── Main layout ──────────────────────────────────────────────────────────
     main_frame = tk.Frame(root, bg="#2B2B2B")
@@ -486,6 +618,76 @@ def show_biome_editor(
         selectcolor="#1A1A1A", activebackground="#2B2B2B",
         font=("Consolas", 8), command=lambda: _refresh_canvas(),
     ).pack(anchor=tk.W, padx=4)
+    # ── Boundary smoothing ────────────────────────────────────────────────────
+    tk.Frame(right_frame, bg="#555555", height=1).pack(fill=tk.X, padx=4, pady=4)
+    tk.Label(
+        right_frame, text="─ 邊界潤色 ─",
+        bg="#2B2B2B", fg="#CCCCCC", font=("Consolas", 9, "bold"),
+    ).pack(pady=(0, 2))
+
+    _SMOOTH_PRESETS = {
+        "輕": (1.0, 0.2),
+        "中": (2.0, 0.5),
+        "強": (3.5, 0.8),
+    }
+    smooth_level_var = tk.StringVar(value="中")
+
+    smooth_row = tk.Frame(right_frame, bg="#2B2B2B")
+    smooth_row.pack(fill=tk.X, padx=4, pady=(0, 3))
+
+    tk.Label(
+        smooth_row, text="強度：",
+        bg="#2B2B2B", fg="#AAAAAA", font=("Consolas", 9),
+    ).pack(side=tk.LEFT)
+
+    smooth_menu = tk.OptionMenu(smooth_row, smooth_level_var, *_SMOOTH_PRESETS.keys())
+    smooth_menu.config(
+        bg="#3A3A3A", fg="#DDDDDD",
+        activebackground="#4A4A4A", activeforeground="#FFFFFF",
+        font=("Consolas", 9), relief=tk.FLAT, bd=0,
+        highlightthickness=0, indicatoron=True,
+    )
+    smooth_menu["menu"].config(bg="#3A3A3A", fg="#DDDDDD", font=("Consolas", 9))
+    smooth_menu.pack(side=tk.LEFT)
+
+    auto_ocean_var = tk.BooleanVar(value=True)
+    tk.Checkbutton(
+        right_frame,
+        text=f"低於海平面設為海洋 (Y<{sea_level})",
+        variable=auto_ocean_var,
+        bg="#2B2B2B", fg="#6699FF",
+        selectcolor="#1A1A1A", activebackground="#2B2B2B",
+        font=("Consolas", 8),
+    ).pack(anchor=tk.W, padx=4, pady=(0, 3))
+
+    def on_apply_smooth() -> None:
+        level = smooth_level_var.get()
+        blur_sigma, strength = _SMOOTH_PRESETS.get(level, (2.0, 0.5))
+        new_grid = _smooth_biome_boundaries(grid, blur_sigma, strength)
+        # Update grid in-place and rebuild grid_idx
+        for r in range(rows):
+            for c in range(cols):
+                grid[r][c] = new_grid[r][c]
+                grid_idx[r, c] = biome_to_idx.get(new_grid[r][c], fallback_idx)
+        # Auto ocean assignment: override cells below sea level
+        if auto_ocean_var.get():
+            ocean_biome = "minecraft:ocean"
+            ocean_idx = biome_to_idx.get(ocean_biome, fallback_idx)
+            for r in range(rows):
+                py = max(0, min(int((r + 0.5) * canvas_h / rows), canvas_h - 1))
+                for c in range(cols):
+                    px = max(0, min(int((c + 0.5) * canvas_w / cols), canvas_w - 1))
+                    if h_mc_canvas[py, px] < sea_level:
+                        grid[r][c] = ocean_biome
+                        grid_idx[r, c] = ocean_idx
+        _refresh_canvas()
+
+    tk.Button(
+        right_frame, text="套用潤色",
+        bg="#3A5A7A", fg="white", font=("Consolas", 9),
+        relief=tk.FLAT, padx=8, pady=4, command=on_apply_smooth,
+    ).pack(fill=tk.X, padx=4, pady=(0, 2))
+
     # ── Confirm / Cancel buttons ─────────────────────────────────────────────
     tk.Frame(right_frame, bg="#555555", height=1).pack(fill=tk.X, padx=4, pady=4)
 

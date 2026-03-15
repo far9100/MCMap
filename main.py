@@ -65,8 +65,8 @@ def _parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    p.add_argument("--world", "-w", default=DEFAULT_WORLD,
-                   help=f"輸入 MC 存檔資料夾（預設：{DEFAULT_WORLD}）")
+    p.add_argument("--world", "-w", default=None,
+                   help=f"輸入 MC 存檔資料夾（省略時從空白生成，無需現有存檔；預設嘗試 {DEFAULT_WORLD}）")
     p.add_argument("--heightmap", "-i", default=None,
                    help=f"HeightMap 圖片路徑；省略時自動選用 {DEFAULT_HM_DIR}/ 中第一個 .png")
     p.add_argument("--output", "-o", default=DEFAULT_OUTPUT,
@@ -187,7 +187,7 @@ def _resolve_origin_and_scale(args, image_path: Path | None):
 def _validate(args, image_path: Path | None) -> list[str]:
     errors = []
 
-    if not args.preview_only:
+    if not args.preview_only and args.world is not None:
         world = Path(args.world)
         if not world.exists():
             errors.append(f"存檔資料夾不存在：{world}")
@@ -437,7 +437,7 @@ def _print_banner(args, image_path):
     print("=" * 64)
     print("  MCMap – HeightMap → Minecraft 1.21.1 World Importer")
     print("=" * 64)
-    print(f"  輸入存檔  : {args.world}")
+    print(f"  輸入存檔  : {args.world or '（無，從空白生成）'}")
     print(f"  HeightMap : {image_path}")
     print(f"  輸出資料夾: {args.output}")
     print(f"  Region 起點: r.{ro[0]}.{ro[1]}  大小: {rs[0]}×{rs[1]} regions ({rs[0]*512}×{rs[1]*512} 格)")

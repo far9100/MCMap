@@ -1,13 +1,13 @@
 {
-  "min_y": -63,
-  "max_y": 319,
-  "sea_level": 0,
+  "min_y": 0,
+  "max_y": 255,
+  "sea_level": 24,
   "snow_line": 192,
   "region_origin": [0, 0],
-  "region_size": [2, 2],
+  "region_size": [1, 1],
   "terrain_smoothing": true,
   "smooth_sigma": 2.0,
-  "smooth_passes": 3,
+  "smooth_passes": 1,
   "hydraulic_erosion": false,
   "hydraulic_erosion_droplets": 20000,
   "thermal_erosion": false,
@@ -20,12 +20,12 @@
   "dirt_top_replacement": true,
   "dirt_top_block": "minecraft:grass_block",
   "surface_layers": [
-    {"block": "minecraft:gravel",     "max_y":16, "min_y":-63,  "blend":4,"slope_threshold": 2.0, "steep_block": "minecraft:stone"},
-    {"block": "minecraft:sand",       "max_y":36, "min_y":17, "blend":4,"slope_threshold": 1.5, "steep_block": "minecraft:stone"},
-    {"block": "minecraft:dirt",       "max_y":72, "min_y":37, "blend":8,"slope_threshold": 1.5, "steep_block": "minecraft:stone"},
-    {"block": "minecraft:gravel",     "max_y":128,"min_y":73, "blend":8,"slope_threshold": 2.0, "steep_block": "minecraft:stone"},
-    {"block": "minecraft:stone",      "max_y":192,"min_y":129,"blend":8},
-    {"block": "minecraft:snow_block", "max_y":319,"min_y":193,"blend":8,"slope_threshold": 3.0, "steep_block": "minecraft:stone"}
+    {"block": "minecraft:gravel",     "max_y":19, "min_y":-63,"blend":4,"slope_threshold": 2.0, "steep_block": "minecraft:stone"},
+    {"block": "minecraft:sand",       "max_y":28, "min_y":20, "blend":4,"slope_threshold": 1.0, "steep_block": "minecraft:stone"},
+    {"block": "minecraft:dirt",       "max_y":128,"min_y":29, "blend":8,"slope_threshold": 2.0, "steep_block": "minecraft:stone"},
+    {"block": "minecraft:gravel",     "max_y":148,"min_y":129,"blend":8,"slope_threshold": 2.0, "steep_block": "minecraft:stone"},
+    {"block": "minecraft:stone",      "max_y":200,"min_y":149,"blend":8},
+    {"block": "minecraft:snow_block", "max_y":319,"min_y":251,"blend":8,"slope_threshold": 3.0, "steep_block": "minecraft:stone"}
   ],
   "subsurface_layers": [
     {"block": "minecraft:deepslate", "min_y": -63, "max_y": -1, "blend": 4},
@@ -33,7 +33,7 @@
   ],
   "biome_grid": {
     "enabled": true,
-    "cell_size": 4,
+    "cell_size": 2,
     "blend_enabled": false,
     "blend_radius": 8,
     "grid": null

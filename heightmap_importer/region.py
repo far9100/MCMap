@@ -163,3 +163,12 @@ class RegionFile:
 
 def get_or_create_region(world_dir: str, chunk_x: int, chunk_z: int) -> RegionFile:
     return RegionFile(_region_path(world_dir, chunk_x, chunk_z))
+
+
+def get_region_src_dst(
+    src_dir: str, dst_dir: str, chunk_x: int, chunk_z: int
+) -> RegionFile:
+    """從 src 世界讀取 region，但 save() 時寫入 dst 世界。"""
+    rf = RegionFile(_region_path(src_dir, chunk_x, chunk_z))  # 從 src 載入
+    rf.path = _region_path(dst_dir, chunk_x, chunk_z)         # 改為寫入 dst
+    return rf
